@@ -1,0 +1,310 @@
+/* OptiStock Slicer Bar */
+@font-stack: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+
+.osb-slicer-row {
+    min-height: 25px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 6px;
+    font-family: @font-stack;
+    box-sizing: border-box;
+    overflow: visible;
+    position: relative;
+}
+
+.osb-slicer-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.osb-slicer-sep {
+    width: 1px;
+    height: 14px;
+    background: #e8e2d3;
+    flex-shrink: 0;
+    margin: 0 2px;
+}
+
+/* ─── Period Chips ─── */
+
+.osb-period-chip {
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: @font-stack;
+    cursor: pointer;
+    border: 1px solid #e8e2d3;
+    background: #f5f4f0;
+    color: #5e5d5a;
+    transition: all 0.12s;
+    white-space: nowrap;
+    outline: none;
+    flex-shrink: 0;
+    line-height: 1.4;
+
+    &:hover {
+        border-color: #130064;
+        color: #130064;
+    }
+
+    &:focus-visible {
+        outline: 2px solid #130064;
+        outline-offset: 1px;
+    }
+
+    &.selected {
+        background: #130064;
+        color: #ffffff;
+        border-color: #130064;
+    }
+}
+
+/* ─── Dropdown Trigger ─── */
+
+.osb-dropdown-trigger {
+    padding: 2px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-family: @font-stack;
+    border: 1px solid #e8e2d3;
+    background: #ffffff;
+    color: #1a1a1a;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    outline: none;
+    flex-shrink: 0;
+    line-height: 1.4;
+    transition: border-color 0.12s;
+
+    &::after {
+        content: "\25B8"; /* ▸ right-pointing for horizontal */
+        font-size: 9px;
+        color: #5e5d5a;
+    }
+
+    &.open {
+        border-color: #130064;
+        background: #f0eef8;
+    }
+
+    &:hover {
+        border-color: #130064;
+    }
+
+    &:focus-visible {
+        outline: 2px solid #130064;
+        outline-offset: 1px;
+    }
+}
+
+/* ─── Slicer Group (trigger + dropdown anchor) ─── */
+
+.osb-slicer-group {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    transition: left 0.15s ease;
+}
+
+/* Hide other slicer elements when one group is active */
+.osb-slicer-row.has-active-group .osb-slicer-label,
+.osb-slicer-row.has-active-group .osb-slicer-sep,
+.osb-slicer-row.has-active-group .osb-period-chip,
+.osb-slicer-row.has-active-group .osb-slicer-group:not(.active-group) {
+    visibility: hidden;
+}
+
+/* ═══════════════════════════════════════
+ * HORIZONTAL SPREAD PANEL (items flow as a row)
+ * ═══════════════════════════════════════ */
+
+.osb-dropdown-panel {
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 4px;
+    background: #ffffff;
+    border: 1px solid #e8e2d3;
+    border-radius: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    font-family: @font-stack;
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 3px 6px;
+    box-sizing: border-box;
+    z-index: 1000;
+    white-space: nowrap;
+
+    &.open {
+        display: inline-flex;
+    }
+
+    /* Flip: spread left instead of right */
+    &.flip-left {
+        left: auto;
+        right: 100%;
+        margin-left: 0;
+        margin-right: 4px;
+    }
+}
+
+.osb-panel-search {
+    padding: 2px 8px;
+    font-size: 11px;
+    font-family: @font-stack;
+    border: 1px solid #e8e2d3;
+    border-radius: 10px;
+    outline: none;
+    flex-shrink: 0;
+    width: 90px;
+
+    &:focus {
+        border-color: #130064;
+    }
+}
+
+.osb-panel-actions {
+    display: inline-flex;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.osb-panel-action-btn {
+    font-size: 10px;
+    font-family: @font-stack;
+    font-weight: 600;
+    color: #130064;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 10px;
+
+    &:hover {
+        background: #f0eee6;
+    }
+}
+
+/* Items container flows horizontally */
+.osb-panel-items {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+}
+
+.osb-dropdown-item {
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 12px;
+    border: 1px solid #c5c3be;
+    background: #ffffff;
+    color: #1a1a1a;
+    white-space: nowrap;
+    transition: all 0.12s;
+    line-height: 1.4;
+    flex-shrink: 0;
+
+    &:hover {
+        border-color: #130064;
+        color: #130064;
+        background: #f0eef8;
+    }
+
+    &.selected {
+        background: #130064;
+        color: #ffffff;
+        border-color: #130064;
+        font-weight: 600;
+    }
+}
+
+.osb-checkbox-item {
+    input[type="checkbox"] {
+        accent-color: #130064;
+        width: 12px;
+        height: 12px;
+        cursor: pointer;
+        flex-shrink: 0;
+        margin: 0;
+    }
+
+    span {
+        white-space: nowrap;
+    }
+}
+
+/* ═══════════════════════════════════════
+ * SELECTED VALUE CHIPS (removable)
+ * ═══════════════════════════════════════ */
+
+.osb-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 12px 6px;
+    background: #faf9f6;
+    min-height: 0;
+    font-family: @font-stack;
+
+    &:empty {
+        display: none;
+    }
+}
+
+.osb-value-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px 1px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 500;
+    background: #e8e5f5;
+    color: #130064;
+    border: 1px solid #d4d0ea;
+    white-space: nowrap;
+    line-height: 1.5;
+}
+
+.osb-chip-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    color: #130064;
+    background: transparent;
+    border: none;
+    font-family: @font-stack;
+    line-height: 1;
+    transition: background 0.1s;
+
+    &:hover {
+        background: #d4d0ea;
+    }
+}

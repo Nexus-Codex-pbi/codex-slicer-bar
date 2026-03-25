@@ -1,0 +1,100 @@
+{
+    "dataRoles": [
+        {
+            "displayName": "Category",
+            "name": "category",
+            "description": "SlicerConfig[Category] — row type: Period, Beat, Filter1, Filter2",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Label",
+            "name": "label",
+            "description": "SlicerConfig[Label] — display text (period type, beat name, filter value)",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Value",
+            "name": "value",
+            "description": "SlicerConfig[Value] — metadata (Table.Column for filters)",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Sort order",
+            "name": "sortOrder",
+            "description": "SlicerConfig[SortOrder] — numeric sort within each category",
+            "kind": "Measure"
+        }
+    ],
+    "objects": {
+        "slicerBar": {
+            "properties": {
+                "backgroundColor": {
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "borderColor": {
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "labelColor": {
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "labelFontSize": {
+                    "type": { "numeric": true }
+                },
+                "chipColor": {
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "chipTextColor": {
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "datePeriodStyle": {
+                    "type": {
+                        "enumeration": [
+                            { "displayName": "Buttons", "value": "buttons" },
+                            { "displayName": "Dropdown", "value": "dropdown" }
+                        ]
+                    }
+                },
+                "datePeriodDefault": {
+                    "type": { "text": true }
+                },
+                "maxVisiblePeriods": {
+                    "type": { "numeric": true }
+                },
+                "maxVisibleSlicers": {
+                    "type": { "numeric": true }
+                },
+                "fanDirection": {
+                    "type": {
+                        "enumeration": [
+                            { "displayName": "Auto", "value": "auto" },
+                            { "displayName": "Right", "value": "right" },
+                            { "displayName": "Left", "value": "left" }
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    "dataViewMappings": [
+        {
+            "categorical": {
+                "categories": {
+                    "select": [
+                        { "for": { "in": "category" } },
+                        { "for": { "in": "label" } },
+                        { "for": { "in": "value" } }
+                    ],
+                    "dataReductionAlgorithm": { "top": { "count": 1000 } }
+                },
+                "values": {
+                    "select": [
+                        { "for": { "in": "sortOrder" } }
+                    ]
+                }
+            }
+        }
+    ],
+    "privileges": [
+        { "name": "LocalStorage", "essential": false }
+    ]
+}
