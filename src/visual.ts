@@ -94,6 +94,24 @@ export class Visual implements IVisual {
             // First load or page navigation: restore persisted filters
             this.readAppliedFilters(options);
             this.initialised = true;
+
+            // Auto-select default date period if none is active
+            const defaultPeriod = this.formattingSettings.slicerBarCard.datePeriodDefault.value;
+            if (!this.selectedDatePeriod && defaultPeriod) {
+                const match = this.data.datePeriods.find(
+                    dp => dp.type.toLowerCase() === defaultPeriod.toLowerCase()
+                );
+                if (match) {
+                    this.selectedDatePeriod = match.type;
+                    this.applyFilter({
+                        $schema: BASIC_FILTER_SCHEMA,
+                        target: { table: "Date Periods", column: "Type" },
+                        operator: "In",
+                        values: [match.type],
+                        filterType: 1,
+                    }, "datePeriod");
+                }
+            }
         }
 
         this.renderSlicerBar(options.viewport.width);
