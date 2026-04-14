@@ -1,9 +1,13 @@
 "use strict";
 
+import powerbi from "powerbi-visuals-api";
+
 import { formattingSettings } from "powerbi-visuals-utils-formattingmodel";
 import FormattingSettingsCard = formattingSettings.SimpleCard;
 import FormattingSettingsSlice = formattingSettings.Slice;
 import FormattingSettingsModel = formattingSettings.Model;
+
+const ConstantOrRule = powerbi.VisualEnumerationInstanceKinds.ConstantOrRule;
 
 export class SlicerBarSettings extends FormattingSettingsCard {
     name = "slicerBar";
@@ -13,16 +17,19 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         name: "backgroundColor",
         displayName: "Background",
         value: { value: "#ffffff" },
+        instanceKind: ConstantOrRule
     });
     borderColor = new formattingSettings.ColorPicker({
         name: "borderColor",
         displayName: "Border colour",
         value: { value: "#e8e2d3" },
+        instanceKind: ConstantOrRule
     });
     labelColor = new formattingSettings.ColorPicker({
         name: "labelColor",
         displayName: "Label colour",
         value: { value: "#5e5d5a" },
+        instanceKind: ConstantOrRule
     });
     labelFontSize = new formattingSettings.NumUpDown({
         name: "labelFontSize",
@@ -33,44 +40,52 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         name: "chipColor",
         displayName: "Selected chip",
         value: { value: "#130064" },
+        instanceKind: ConstantOrRule
     });
     chipTextColor = new formattingSettings.ColorPicker({
         name: "chipTextColor",
         displayName: "Selected chip text",
         value: { value: "#ffffff" },
+        instanceKind: ConstantOrRule
     });
-    datePeriodStyle = new formattingSettings.ItemDropdown({
-        name: "datePeriodStyle",
-        displayName: "Date period style",
+    defaultDisplayMode = new formattingSettings.ItemDropdown({
+        name: "defaultDisplayMode",
+        displayName: "Default display mode",
         items: [
-            { displayName: "Buttons", value: "buttons" },
+            { displayName: "Auto", value: "auto" },
+            { displayName: "Chips", value: "chips" },
             { displayName: "Dropdown", value: "dropdown" },
         ],
-        value: { displayName: "Buttons", value: "buttons" },
+        value: { displayName: "Auto", value: "auto" },
     });
-    datePeriodDefault = new formattingSettings.TextInput({
-        name: "datePeriodDefault",
-        displayName: "Default period",
-        value: "Last 30 Days",
-        placeholder: "Default selection",
+    defaultSelectionMode = new formattingSettings.ItemDropdown({
+        name: "defaultSelectionMode",
+        displayName: "Default selection mode",
+        items: [
+            { displayName: "Single", value: "single" },
+            { displayName: "Multi", value: "multi" },
+        ],
+        value: { displayName: "Single", value: "single" },
     });
-    maxVisiblePeriods = new formattingSettings.NumUpDown({
-        name: "maxVisiblePeriods",
-        displayName: "Max visible periods",
+    maxVisibleChips = new formattingSettings.NumUpDown({
+        name: "maxVisibleChips",
+        displayName: "Max visible chips",
         value: 8,
     });
-    maxVisibleSlicers = new formattingSettings.NumUpDown({
-        name: "maxVisibleSlicers",
-        displayName: "Max visible slicer groups",
+    maxVisibleSections = new formattingSettings.NumUpDown({
+        name: "maxVisibleSections",
+        displayName: "Max visible sections",
         value: 10,
     });
     fanDirection = new formattingSettings.ItemDropdown({
         name: "fanDirection",
-        displayName: "Fan-out direction",
+        displayName: "Dropdown direction",
         items: [
             { displayName: "Auto", value: "auto" },
-            { displayName: "Right", value: "right" },
-            { displayName: "Left", value: "left" },
+            { displayName: "Fan Right", value: "right" },
+            { displayName: "Fan Left", value: "left" },
+            { displayName: "Fan Up", value: "up" },
+            { displayName: "Fan Down", value: "down" },
         ],
         value: { displayName: "Auto", value: "auto" },
     });
@@ -82,10 +97,10 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         this.labelFontSize,
         this.chipColor,
         this.chipTextColor,
-        this.datePeriodStyle,
-        this.datePeriodDefault,
-        this.maxVisiblePeriods,
-        this.maxVisibleSlicers,
+        this.defaultDisplayMode,
+        this.defaultSelectionMode,
+        this.maxVisibleChips,
+        this.maxVisibleSections,
         this.fanDirection,
     ];
 }

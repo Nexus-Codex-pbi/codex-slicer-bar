@@ -8,11 +8,17 @@ import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructor
 import VisualUpdateOptions = powerbi.extensibility.visual.VisualUpdateOptions;
 import IVisual = powerbi.extensibility.visual.IVisual;
 import IVisualHost = powerbi.extensibility.visual.IVisualHost;
+import IVisualEventService = powerbi.extensibility.IVisualEventService;
+import ILocalizationManager = powerbi.extensibility.ILocalizationManager;
+import ISelectionManager = powerbi.extensibility.ISelectionManager;
+import ITooltipService = powerbi.extensibility.ITooltipService;
+import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import IFilter = powerbi.IFilter;
 
 import { VisualFormattingSettingsModel } from "./settings";
-import { parseDataView, SlicerData, DatePeriodItem, PageFilterMeta } from "./dataParser";
+import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 
+// eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
 
 interface BasicFilter extends IFilter {
@@ -26,99 +32,168 @@ interface BasicFilter extends IFilter {
 export class Visual implements IVisual {
     private target: HTMLElement;
     private host: IVisualHost;
+    private events: IVisualEventService;
+    private localizationManager: ILocalizationManager;
+    private selectionManager: ISelectionManager;
     private formattingSettings: VisualFormattingSettingsModel;
     private formattingSettingsService: FormattingSettingsService;
 
-    private data: SlicerData;
-    private cachedData: SlicerData | null = null;
+    private tooltipService: ITooltipService;
 
-    // State
-    private selectedDatePeriod: string = "";
-    private selectedBeats: Set<string> = new Set();
-    private selectedPageFilters: Map<string, Set<string>> = new Map();
+    // High contrast support
+    private colorPalette: powerbi.extensibility.ISandboxExtendedColorPalette;
+    private isHighContrast: boolean = false;
+
+    private sections: SlicerSection[] = [];
+    private cachedSections: SlicerSection[] | null = null;
+
+    /** Selection state per section: sectionName → selected labels */
+    private selections: Map<string, Set<string>> = new Map();
 
     // DOM
     private slicerRow: HTMLElement;
 
-    // Currently open dropdown context
-    private openDropdownType: string = "";
+    // Currently open dropdown
+    private openDropdownId: string = "";
+    private activePanel: HTMLElement | null = null;
 
     // Skip PBI-triggered re-render after we apply our own filters
     private selfFilterPending: boolean = false;
     private initialised: boolean = false;
 
+    // Store reference to document click handler for cleanup in destroy()
+    private documentClickHandler: (e: MouseEvent) => void;
+
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
+        this.events = options.host.eventService;
+        this.localizationManager = options.host.createLocalizationManager();
+        this.selectionManager = options.host.createSelectionManager();
+        this.tooltipService = options.host.tooltipService;
+        this.colorPalette = options.host.colorPalette as powerbi.extensibility.ISandboxExtendedColorPalette;
+        this.isHighContrast = this.colorPalette.isHighContrast || false;
         this.formattingSettingsService = new FormattingSettingsService();
         this.target = options.element;
         this.target.style.display = "flex";
         this.target.style.flexDirection = "column";
         this.target.style.justifyContent = "center";
         this.target.style.height = "100%";
-        this.data = { datePeriods: [], beats: [], pageFilters: [] };
 
         this.slicerRow = document.createElement("div");
         this.slicerRow.className = "osb-slicer-row";
-
         this.target.appendChild(this.slicerRow);
 
-        // Close dropdown on outside click
-        document.addEventListener("click", (e: MouseEvent) => {
-            if (!(e.target as HTMLElement)?.closest(".osb-slicer-group")) {
+        // Close dropdown on outside click (store reference for destroy cleanup)
+        this.documentClickHandler = (e: MouseEvent) => {
+            if (!(e.target as HTMLElement)?.closest(".osb-slicer-group") &&
+                !(e.target as HTMLElement)?.closest(".osb-fixed-panel")) {
                 this.closeAllDropdowns();
             }
+        };
+        document.addEventListener("click", this.documentClickHandler);
+
+        // Context menu — right-click shows PBI context menu
+        this.target.addEventListener("contextmenu", (e: MouseEvent) => {
+            this.selectionManager.showContextMenu({}, { x: e.clientX, y: e.clientY });
+            e.preventDefault();
         });
     }
 
     public update(options: VisualUpdateOptions): void {
-        if (!options?.dataViews?.[0]) return;
+        this.events.renderingStarted(options);
 
-        const dv = options.dataViews[0];
-        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
-            VisualFormattingSettingsModel, dv
-        );
-
-        const parsed = parseDataView(dv);
-
-        // Cache the fullest data — filtered updates return fewer rows
-        if (!this.cachedData || parsed.datePeriods.length + parsed.beats.length + parsed.pageFilters.length
-            >= this.cachedData.datePeriods.length + this.cachedData.beats.length + this.cachedData.pageFilters.length) {
-            this.cachedData = parsed;
+        if (!options?.dataViews?.[0]) {
+            this.events.renderingFinished(options);
+            return;
         }
-        this.data = this.cachedData;
 
-        // Only read filters from PBI when it's not our own filter triggering the update
-        if (this.selfFilterPending) {
-            this.selfFilterPending = false;
-        } else if (!this.initialised) {
-            // First load or page navigation: restore persisted filters
-            this.readAppliedFilters(options);
-            this.initialised = true;
+        try {
+            // Refresh high contrast state each update
+            this.isHighContrast = this.colorPalette.isHighContrast || false;
 
-            // Auto-select default date period if none is active
-            const defaultPeriod = this.formattingSettings.slicerBarCard.datePeriodDefault.value;
-            if (!this.selectedDatePeriod && defaultPeriod) {
-                const match = this.data.datePeriods.find(
-                    dp => dp.type.toLowerCase() === defaultPeriod.toLowerCase()
-                );
-                if (match) {
-                    this.selectedDatePeriod = match.type;
-                    this.applyFilter({
-                        $schema: BASIC_FILTER_SCHEMA,
-                        target: { table: "Date Periods", column: "Type" },
-                        operator: "In",
-                        values: [match.type],
-                        filterType: 1,
-                    }, "datePeriod");
+            const dv = options.dataViews[0];
+            this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
+                VisualFormattingSettingsModel, dv
+            );
+
+            const parsed = parseDataView(dv);
+
+            // Cache the fullest data — filtered updates return fewer rows
+            const parsedCount = parsed.reduce((sum, s) => sum + s.items.length, 0);
+            const cachedCount = this.cachedSections
+                ? this.cachedSections.reduce((sum, s) => sum + s.items.length, 0)
+                : 0;
+            if (!this.cachedSections || parsedCount >= cachedCount) {
+                this.cachedSections = parsed;
+            }
+            this.sections = this.cachedSections;
+
+            // Apply formatting panel defaults where data doesn't specify
+            this.applyFormattingDefaults();
+
+            if (this.selfFilterPending) {
+                this.selfFilterPending = false;
+            } else if (!this.initialised) {
+                this.readAppliedFilters(options);
+                this.initialised = true;
+
+                // Auto-select defaults for sections that have one configured
+                for (const section of this.sections) {
+                    if (!section.defaultValue) continue;
+                    const sel = this.selections.get(section.name);
+                    if (sel && sel.size > 0) continue;
+                    const match = section.items.find(
+                        item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
+                    );
+                    if (match) {
+                        this.selections.set(section.name, new Set([match.label]));
+                        // Apply filter if section has a filter target
+                        if (section.filterTarget) {
+                            this.applyFilter({
+                                $schema: BASIC_FILTER_SCHEMA,
+                                target: section.filterTarget,
+                                operator: "In",
+                                values: [match.label],
+                                filterType: 1,
+                            }, `section_${section.name}`);
+                        }
+                    }
                 }
             }
-        }
 
-        this.renderSlicerBar(options.viewport.width);
+            this.renderSlicerBar(options.viewport.width);
+            this.events.renderingFinished(options);
+        } catch (e) {
+            this.events.renderingFailed(options, String(e));
+        }
     }
 
     public getFormattingModel(): powerbi.visuals.FormattingModel {
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
+    }
+
+    /* ═══════════════════════════════════════
+     * FORMATTING DEFAULTS
+     * ═══════════════════════════════════════ */
+
+    private applyFormattingDefaults(): void {
+        const s = this.formattingSettings.slicerBarCard;
+        const globalDisplay = String(s.defaultDisplayMode.value.value || "auto");
+        const globalSelection = String(s.defaultSelectionMode.value.value || "single");
+
+        for (const section of this.sections) {
+            if (section.displayMode !== "chips" && section.displayMode !== "dropdown") {
+                if (globalDisplay === "chips" || globalDisplay === "dropdown") {
+                    section.displayMode = globalDisplay;
+                } else {
+                    section.displayMode = section.items.length <= (s.maxVisibleChips.value || 8)
+                        ? "chips" : "dropdown";
+                }
+            }
+            if (section.selectionMode !== "single" && section.selectionMode !== "multi") {
+                section.selectionMode = globalSelection;
+            }
+        }
     }
 
     /* ═══════════════════════════════════════
@@ -127,99 +202,117 @@ export class Visual implements IVisual {
 
     private renderSlicerBar(viewportWidth: number): void {
         const s = this.formattingSettings.slicerBarCard;
-        const maxSlicers = s.maxVisibleSlicers.value || 10;
-        let slicerCount = 0;
+        const hc = this.isHighContrast;
+        const fg = hc ? this.colorPalette.foreground.value : "";
+        const bg = hc ? this.colorPalette.background.value : "";
+        const maxSections = s.maxVisibleSections.value || 10;
+        let sectionCount = 0;
 
-        this.slicerRow.innerHTML = "";
-        this.slicerRow.classList.remove("has-active-group");
-        this.slicerRow.style.background = s.backgroundColor.value.value;
+        while (this.slicerRow.firstChild) { this.slicerRow.removeChild(this.slicerRow.firstChild); }
+        this.slicerRow.style.background = hc ? bg : s.backgroundColor.value.value;
         this.slicerRow.style.width = viewportWidth + "px";
 
-        // Center by default, right-justify when fan direction is left
-        const dir = s.fanDirection.value.value || "auto";
+        // Right-justify the bar when fan direction is left
+        const dir = String(s.fanDirection.value.value || "auto");
         this.slicerRow.style.justifyContent = dir === "left" ? "flex-end" : "";
 
-        // Date Period Section (counts as 1 slicer group)
-        if (this.data.datePeriods.length > 0 && slicerCount < maxSlicers) {
-            slicerCount++;
-            const periodLabel = document.createElement("span");
-            periodLabel.className = "osb-slicer-label";
-            periodLabel.textContent = "PERIOD:";
-            periodLabel.style.color = s.labelColor.value.value;
-            periodLabel.style.fontSize = s.labelFontSize.value + "px";
-            this.slicerRow.appendChild(periodLabel);
+        for (const section of this.sections) {
+            if (sectionCount >= maxSections) break;
 
-            const isButtons = s.datePeriodStyle.value.value === "buttons";
-            if (isButtons) {
-                this.renderDatePeriodChips(s);
-            } else {
-                this.renderDatePeriodDropdownTrigger(s);
-            }
-        }
-
-        // Beat Dropdown (counts as 1 slicer group)
-        if (this.data.beats.length > 0 && slicerCount < maxSlicers) {
-            slicerCount++;
-            if (slicerCount > 1) {
+            if (sectionCount > 0) {
                 const sep = document.createElement("span");
                 sep.className = "osb-slicer-sep";
                 this.slicerRow.appendChild(sep);
             }
-            const beatLabel = document.createElement("span");
-            beatLabel.className = "osb-slicer-label";
-            beatLabel.textContent = "BEAT:";
-            beatLabel.style.color = s.labelColor.value.value;
-            beatLabel.style.fontSize = s.labelFontSize.value + "px";
-            this.slicerRow.appendChild(beatLabel);
-            this.renderBeatDropdownGroup(s);
-        }
 
-        // Page Filters (each counts as 1 slicer group)
-        for (const pf of this.data.pageFilters) {
-            if (slicerCount >= maxSlicers) break;
-            slicerCount++;
-            const sep = document.createElement("span");
-            sep.className = "osb-slicer-sep";
-            this.slicerRow.appendChild(sep);
-            const filterLabel = document.createElement("span");
-            filterLabel.className = "osb-slicer-label";
-            filterLabel.textContent = pf.label.toUpperCase() + ":";
-            filterLabel.style.color = s.labelColor.value.value;
-            filterLabel.style.fontSize = s.labelFontSize.value + "px";
-            this.slicerRow.appendChild(filterLabel);
-            this.renderPageFilterGroup(pf, s);
+            sectionCount++;
+
+            const label = document.createElement("span");
+            label.className = "osb-slicer-label";
+            label.textContent = section.name.toUpperCase() + ":";
+            label.style.color = hc ? fg : s.labelColor.value.value;
+            label.style.fontSize = s.labelFontSize.value + "px";
+            this.slicerRow.appendChild(label);
+
+            if (!section.interactive) {
+                this.renderStaticSection(section, s);
+            } else if (section.displayMode === "dropdown") {
+                this.renderDropdownSection(section, s);
+            } else {
+                this.renderChipsSection(section, s);
+            }
         }
     }
 
-    /* ─── Date Period Chips ─── */
+    /* ─── Static Section (non-interactive display) ─── */
 
-    private renderDatePeriodChips(s: any): void {
-        const maxVisible = s.maxVisiblePeriods.value || 8;
-        const visible = this.data.datePeriods.slice(0, maxVisible);
-        const overflow = this.data.datePeriods.slice(maxVisible);
+    private renderStaticSection(section: SlicerSection, s: any): void {
+        const hc = this.isHighContrast;
+        const fg = hc ? this.colorPalette.foreground.value : "";
+        for (const item of section.items) {
+            const staticText = document.createElement("span");
+            staticText.className = "osb-static-value";
+            staticText.textContent = item.value || item.label;
+            staticText.style.color = hc ? fg : s.labelColor.value.value;
+            staticText.style.fontSize = s.labelFontSize.value + "px";
+            this.slicerRow.appendChild(staticText);
+        }
+    }
 
-        for (const dp of visible) {
+    /* ─── Chips Section ─── */
+
+    private renderChipsSection(section: SlicerSection, s: any): void {
+        const hc = this.isHighContrast;
+        const fg = hc ? this.colorPalette.foreground.value : "";
+        const bg = hc ? this.colorPalette.background.value : "";
+        const fgSelected = hc && (this.colorPalette as any).foregroundSelected
+            ? (this.colorPalette as any).foregroundSelected.value : fg;
+        const maxVisible = s.maxVisibleChips.value || 8;
+        const visible = section.items.slice(0, maxVisible);
+        const overflow = section.items.slice(maxVisible);
+        const sel = this.selections.get(section.name) || new Set<string>();
+
+        for (const item of visible) {
             const chip = document.createElement("button");
             chip.className = "osb-period-chip";
-            chip.textContent = dp.type;
+            chip.textContent = item.label;
 
-            const isSelected = this.selectedDatePeriod === dp.type;
-            if (isSelected) {
+            if (sel.has(item.label)) {
                 chip.classList.add("selected");
-                chip.style.background = s.chipColor.value.value;
-                chip.style.color = s.chipTextColor.value.value;
-                chip.style.borderColor = s.chipColor.value.value;
+                chip.style.background = hc ? fgSelected : s.chipColor.value.value;
+                chip.style.color = hc ? bg : s.chipTextColor.value.value;
+                chip.style.borderColor = hc ? fgSelected : s.chipColor.value.value;
             }
+
+            chip.addEventListener("mousemove", (e: MouseEvent) => {
+                const tooltipItems: VisualTooltipDataItem[] = [
+                    { displayName: section.name, value: item.label }
+                ];
+                if (item.value) {
+                    tooltipItems.push({ displayName: "Filter", value: item.value });
+                }
+                if (item.shortLabel) {
+                    tooltipItems.push({ displayName: "Detail", value: item.shortLabel });
+                }
+                this.tooltipService.show({
+                    coordinates: [e.clientX, e.clientY],
+                    isTouchEvent: false,
+                    dataItems: tooltipItems,
+                    identities: []
+                });
+            });
+            chip.addEventListener("mouseleave", () => {
+                this.tooltipService.hide({ isTouchEvent: false, immediately: false });
+            });
 
             chip.addEventListener("click", (e: MouseEvent) => {
                 e.stopPropagation();
-                this.onDatePeriodClick(dp.type);
+                this.onChipClick(section, item.label);
             });
-
             chip.addEventListener("keydown", (e: KeyboardEvent) => {
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    this.onDatePeriodClick(dp.type);
+                    this.onChipClick(section, item.label);
                 }
             });
 
@@ -229,258 +322,281 @@ export class Visual implements IVisual {
         if (overflow.length > 0) {
             const group = this.createDropdownGroup(
                 `+${overflow.length} more`,
-                "period-overflow",
-                (panel: HTMLElement) => this.buildPeriodDropdownItems(panel, overflow)
+                `${section.name}_overflow`,
+                (panel: HTMLElement) => {
+                    this.buildDropdownItems(panel, section, overflow);
+                }
             );
             this.slicerRow.appendChild(group);
         }
     }
 
-    private renderDatePeriodDropdownTrigger(s: any): void {
-        const group = this.createDropdownGroup(
-            this.selectedDatePeriod || "Select period",
-            "period",
-            (panel: HTMLElement) => this.buildPeriodDropdownItems(panel, this.data.datePeriods)
-        );
-        this.slicerRow.appendChild(group);
-    }
+    private onChipClick(section: SlicerSection, label: string): void {
+        const sel = this.selections.get(section.name) || new Set<string>();
 
-    private buildPeriodDropdownItems(panel: HTMLElement, items: DatePeriodItem[]): void {
-        const container = document.createElement("div");
-        container.className = "osb-panel-items";
-        for (const dp of items) {
-            const item = document.createElement("div");
-            item.className = "osb-dropdown-item";
-            if (this.selectedDatePeriod === dp.type) item.classList.add("selected");
-            item.textContent = dp.type;
-            item.addEventListener("click", (e: MouseEvent) => {
-                e.stopPropagation();
-                this.onDatePeriodClick(dp.type);
-                this.closeAllDropdowns();
-            });
-            container.appendChild(item);
-        }
-        panel.appendChild(container);
-    }
-
-    private onDatePeriodClick(periodType: string): void {
-        if (this.selectedDatePeriod === periodType) {
-            this.selectedDatePeriod = "";
-            this.applyFilter(null, "datePeriod");
+        if (section.selectionMode === "single") {
+            if (sel.has(label) && sel.size === 1) {
+                sel.clear();
+            } else {
+                sel.clear();
+                sel.add(label);
+            }
         } else {
-            this.selectedDatePeriod = periodType;
-            this.applyFilter({
-                $schema: BASIC_FILTER_SCHEMA,
-                target: { table: "Date Periods", column: "Type" },
-                operator: "In",
-                values: [periodType],
-                filterType: 1,
-            }, "datePeriod");
+            if (sel.has(label)) {
+                sel.delete(label);
+            } else {
+                sel.add(label);
+            }
         }
+
+        this.selections.set(section.name, sel);
+        this.applySectionFilter(section);
         this.renderSlicerBar(this.target.clientWidth);
     }
 
-    /* ─── Beat Dropdown ─── */
+    /* ─── Dropdown Section ─── */
 
-    private renderBeatDropdownGroup(s: any): void {
-        const count = this.selectedBeats.size;
-        const label = (count === 0 || count === this.data.beats.length)
-            ? "All beats" : `${count} selected`;
+    private renderDropdownSection(section: SlicerSection, s: any): void {
+        const sel = this.selections.get(section.name) || new Set<string>();
+        const count = sel.size;
 
-        const group = this.createDropdownGroup(label, "beat", (panel: HTMLElement) => {
-            // Search box if > 10 items
-            if (this.data.beats.length > 10) {
-                const searchInput = document.createElement("input");
-                searchInput.className = "osb-panel-search";
-                searchInput.type = "text";
-                searchInput.placeholder = "Search...";
-                searchInput.addEventListener("click", (e) => e.stopPropagation());
-                searchInput.addEventListener("input", () => {
-                    this.renderBeatItems(itemsContainer, searchInput.value);
-                });
-                panel.appendChild(searchInput);
+        let triggerLabel: string;
+        if (section.selectionMode === "single") {
+            triggerLabel = count === 1 ? Array.from(sel)[0] : `Select ${section.name.toLowerCase()}`;
+        } else {
+            if (count === 0 || count === section.items.length) {
+                triggerLabel = `All ${section.name.toLowerCase()}`;
+            } else if (count === 1) {
+                triggerLabel = Array.from(sel)[0];
+            } else {
+                triggerLabel = `${count} selected`;
             }
-
-            // Select all / Clear
-            const actions = document.createElement("div");
-            actions.className = "osb-panel-actions";
-
-            const selectAll = document.createElement("button");
-            selectAll.className = "osb-panel-action-btn";
-            selectAll.textContent = "Select all";
-            selectAll.addEventListener("click", (e: MouseEvent) => {
-                e.stopPropagation();
-                this.data.beats.forEach(b => this.selectedBeats.add(b));
-                this.applyBeatFilter();
-                this.closeAllDropdowns();
-                this.renderSlicerBar(this.target.clientWidth);
-
-            });
-
-            const clearAll = document.createElement("button");
-            clearAll.className = "osb-panel-action-btn";
-            clearAll.textContent = "Clear";
-            clearAll.addEventListener("click", (e: MouseEvent) => {
-                e.stopPropagation();
-                this.selectedBeats.clear();
-                this.applyBeatFilter();
-                this.closeAllDropdowns();
-                this.renderSlicerBar(this.target.clientWidth);
-
-            });
-
-            actions.appendChild(selectAll);
-            actions.appendChild(clearAll);
-            panel.appendChild(actions);
-
-            const itemsContainer = document.createElement("div");
-            itemsContainer.className = "osb-panel-items";
-            this.renderBeatItems(itemsContainer, "");
-            panel.appendChild(itemsContainer);
-        });
-        this.slicerRow.appendChild(group);
-    }
-
-    private renderBeatItems(container: HTMLElement, filter: string): void {
-        container.innerHTML = "";
-        const filtered = filter
-            ? this.data.beats.filter(b => b.toLowerCase().includes(filter.toLowerCase()))
-            : this.data.beats;
-
-        for (const beat of filtered) {
-            const item = document.createElement("label");
-            item.className = "osb-dropdown-item osb-checkbox-item";
-
-            const cb = document.createElement("input");
-            cb.type = "checkbox";
-            cb.checked = this.selectedBeats.has(beat);
-            cb.addEventListener("change", (e: Event) => {
-                e.stopPropagation();
-                if (cb.checked) {
-                    this.selectedBeats.add(beat);
-                } else {
-                    this.selectedBeats.delete(beat);
-                }
-                this.applyBeatFilter();
-                this.renderSlicerBar(this.target.clientWidth);
-
-            });
-
-            const span = document.createElement("span");
-            span.textContent = beat;
-
-            item.appendChild(cb);
-            item.appendChild(span);
-            item.addEventListener("click", (e) => e.stopPropagation());
-            container.appendChild(item);
-        }
-    }
-
-    private applyBeatFilter(): void {
-        if (this.selectedBeats.size === 0 || this.selectedBeats.size === this.data.beats.length) {
-            this.applyFilter(null, "beat");
-        } else {
-            this.applyFilter({
-                $schema: BASIC_FILTER_SCHEMA,
-                target: { table: "DimBeat", column: "Beat" },
-                operator: "In",
-                values: Array.from(this.selectedBeats),
-                filterType: 1,
-            }, "beat");
-        }
-    }
-
-    /* ─── Page Filter Dropdowns ─── */
-
-    private renderPageFilterGroup(pf: PageFilterMeta, s: any): void {
-        const sel = this.selectedPageFilters.get(pf.column);
-        const count = sel ? sel.size : 0;
-
-        let label: string;
-        if (count === 0 || count === pf.values.length) {
-            label = `All ${pf.label}`;
-        } else if (count === 1) {
-            label = Array.from(sel!)[0];
-        } else {
-            label = `${count} ${pf.label}`;
         }
 
-        const group = this.createDropdownGroup(label, `filter_${pf.column}`, (panel: HTMLElement) => {
-            const currentSel = this.selectedPageFilters.get(pf.column) || new Set<string>();
-
-            // Search if > 10 items
-            if (pf.values.length > 10) {
-                const searchInput = document.createElement("input");
-                searchInput.className = "osb-panel-search";
-                searchInput.type = "text";
-                searchInput.placeholder = "Search...";
-                searchInput.addEventListener("click", (e) => e.stopPropagation());
-                searchInput.addEventListener("input", () => {
-                    this.renderFilterItems(itemsContainer, pf, currentSel, searchInput.value);
-                });
-                panel.appendChild(searchInput);
+        // Build shortLabel text from selected items
+        let shortLabelText = "";
+        if (count > 0) {
+            const selectedItems = section.items.filter(i => sel.has(i.label));
+            const labels = selectedItems.map(i => i.shortLabel).filter(sl => sl);
+            if (labels.length > 0) {
+                shortLabelText = labels.join(", ");
             }
+        }
 
-            const itemsContainer = document.createElement("div");
-            itemsContainer.className = "osb-panel-items";
-            this.renderFilterItems(itemsContainer, pf, currentSel, "");
-            panel.appendChild(itemsContainer);
-        });
-        this.slicerRow.appendChild(group);
-    }
-
-    private renderFilterItems(container: HTMLElement, pf: PageFilterMeta, sel: Set<string>, filter: string): void {
-        container.innerHTML = "";
-        const filtered = filter
-            ? pf.values.filter(v => v.toLowerCase().includes(filter.toLowerCase()))
-            : pf.values;
-
-        for (const val of filtered) {
-            const item = document.createElement("label");
-            item.className = "osb-dropdown-item osb-checkbox-item";
-
-            const cb = document.createElement("input");
-            cb.type = "checkbox";
-            cb.checked = sel.has(val);
-            cb.addEventListener("change", (e: Event) => {
-                e.stopPropagation();
-                if (cb.checked) {
-                    sel.add(val);
-                } else {
-                    sel.delete(val);
+        const group = this.createDropdownGroup(
+            triggerLabel,
+            `section_${section.name}`,
+            (panel: HTMLElement) => {
+                if (section.items.length > 10) {
+                    const searchInput = document.createElement("input");
+                    searchInput.className = "osb-panel-search";
+                    searchInput.type = "text";
+                    searchInput.placeholder = this.localizationManager.getDisplayName("Search_Placeholder");
+                    searchInput.addEventListener("click", (e) => e.stopPropagation());
+                    searchInput.addEventListener("input", () => {
+                        this.buildDropdownItems(itemsContainer, section, null, searchInput.value);
+                    });
+                    panel.appendChild(searchInput);
                 }
-                this.selectedPageFilters.set(pf.column, sel);
-                this.applyPageFilter(pf, sel);
-                this.renderSlicerBar(this.target.clientWidth);
 
-            });
+                if (section.selectionMode === "multi") {
+                    const actions = document.createElement("div");
+                    actions.className = "osb-panel-actions";
 
-            const span = document.createElement("span");
-            span.textContent = val;
+                    const selectAll = document.createElement("button");
+                    selectAll.className = "osb-panel-action-btn";
+                    selectAll.textContent = this.localizationManager.getDisplayName("Select_All");
+                    selectAll.addEventListener("click", (e: MouseEvent) => {
+                        e.stopPropagation();
+                        this.selections.set(section.name, new Set(section.items.map(i => i.label)));
+                        this.applySectionFilter(section);
+                        this.closeAllDropdowns();
+                        this.renderSlicerBar(this.target.clientWidth);
+                    });
 
-            item.appendChild(cb);
-            item.appendChild(span);
-            item.addEventListener("click", (e) => e.stopPropagation());
-            container.appendChild(item);
+                    const clearAll = document.createElement("button");
+                    clearAll.className = "osb-panel-action-btn";
+                    clearAll.textContent = this.localizationManager.getDisplayName("Clear_All");
+                    clearAll.addEventListener("click", (e: MouseEvent) => {
+                        e.stopPropagation();
+                        this.selections.set(section.name, new Set());
+                        this.applySectionFilter(section);
+                        this.closeAllDropdowns();
+                        this.renderSlicerBar(this.target.clientWidth);
+                    });
+
+                    actions.appendChild(selectAll);
+                    actions.appendChild(clearAll);
+                    panel.appendChild(actions);
+                }
+
+                const itemsContainer = document.createElement("div");
+                itemsContainer.className = "osb-panel-items";
+                this.buildDropdownItems(itemsContainer, section);
+                panel.appendChild(itemsContainer);
+            }
+        );
+        this.slicerRow.appendChild(group);
+
+        // Show shortLabel (e.g. date range) next to trigger when selected
+        if (shortLabelText) {
+            const hc = this.isHighContrast;
+            const fg = hc ? this.colorPalette.foreground.value : "";
+            const subtitle = document.createElement("span");
+            subtitle.className = "osb-short-label";
+            subtitle.textContent = shortLabelText;
+            subtitle.style.color = hc ? fg : s.labelColor.value.value;
+            subtitle.style.fontSize = (s.labelFontSize.value - 1) + "px";
+            this.slicerRow.appendChild(subtitle);
         }
     }
 
-    private applyPageFilter(pf: PageFilterMeta, sel: Set<string>): void {
-        if (sel.size === 0 || sel.size === pf.values.length) {
-            this.applyFilter(null, `pageFilter_${pf.column}`);
+    private buildDropdownItems(
+        container: HTMLElement,
+        section: SlicerSection,
+        items?: SlicerItem[] | null,
+        filter?: string
+    ): void {
+        while (container.firstChild) { container.removeChild(container.firstChild); }
+        const sel = this.selections.get(section.name) || new Set<string>();
+        let renderItems = items || section.items;
+
+        if (filter) {
+            const lowerFilter = filter.toLowerCase();
+            renderItems = renderItems.filter(i => i.label.toLowerCase().includes(lowerFilter));
+        }
+
+        if (section.selectionMode === "single") {
+            for (const item of renderItems) {
+                const el = document.createElement("div");
+                el.className = "osb-dropdown-item";
+                if (sel.has(item.label)) el.classList.add("selected");
+                el.textContent = item.label;
+                el.addEventListener("mousemove", (e: MouseEvent) => {
+                    this.tooltipService.show({
+                        coordinates: [e.clientX, e.clientY],
+                        isTouchEvent: false,
+                        dataItems: [{ displayName: section.name, value: item.label }],
+                        identities: []
+                    });
+                });
+                el.addEventListener("mouseleave", () => {
+                    this.tooltipService.hide({ isTouchEvent: false, immediately: false });
+                });
+                el.addEventListener("click", (e: MouseEvent) => {
+                    e.stopPropagation();
+                    this.onChipClick(section, item.label);
+                    this.closeAllDropdowns();
+                });
+                container.appendChild(el);
+            }
         } else {
-            this.applyFilter({
-                $schema: BASIC_FILTER_SCHEMA,
-                target: { table: pf.table, column: pf.column },
-                operator: "In",
-                values: Array.from(sel),
-                filterType: 1,
-            }, `pageFilter_${pf.column}`);
+            for (const item of renderItems) {
+                const label = document.createElement("label");
+                label.className = "osb-dropdown-item osb-checkbox-item";
+
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.checked = sel.has(item.label);
+                cb.addEventListener("change", (e: Event) => {
+                    e.stopPropagation();
+                    const currentSel = this.selections.get(section.name) || new Set<string>();
+                    if (cb.checked) {
+                        currentSel.add(item.label);
+                    } else {
+                        currentSel.delete(item.label);
+                    }
+                    this.selections.set(section.name, currentSel);
+                    this.applySectionFilter(section);
+                    this.renderSlicerBar(this.target.clientWidth);
+                });
+
+                const span = document.createElement("span");
+                span.textContent = item.label;
+
+                label.appendChild(cb);
+                label.appendChild(span);
+                label.addEventListener("click", (e) => e.stopPropagation());
+                container.appendChild(label);
+            }
         }
     }
 
     /* ═══════════════════════════════════════
-     * DROPDOWN GROUP FACTORY + MANAGEMENT
+     * FILTER APPLICATION
+     * ═══════════════════════════════════════ */
+
+    private applySectionFilter(section: SlicerSection): void {
+        if (!section.filterTarget) {
+            return;
+        }
+        const sel = this.selections.get(section.name) || new Set<string>();
+
+        if (sel.size === 0 || sel.size === section.items.length) {
+            this.applyFilter(null, `section_${section.name}`);
+        } else {
+            this.applyFilter({
+                $schema: BASIC_FILTER_SCHEMA,
+                target: section.filterTarget,
+                operator: "In",
+                values: Array.from(sel),
+                filterType: 1,
+            }, `section_${section.name}`);
+        }
+    }
+
+    private applyFilter(filter: BasicFilter | null, action: string): void {
+        this.selfFilterPending = true;
+        try {
+            if (filter) {
+                (this.host as any).applyJsonFilter(filter, "general", "filter", 0 /* merge */);
+            } else {
+                const sectionName = action.replace("section_", "");
+                const section = this.sections.find(s => s.name === sectionName);
+                if (section?.filterTarget) {
+                    const removeFilter: BasicFilter = {
+                        $schema: BASIC_FILTER_SCHEMA,
+                        target: section.filterTarget,
+                        operator: "In",
+                        values: [],
+                        filterType: 1,
+                    };
+                    (this.host as any).applyJsonFilter(removeFilter, "general", "filter", 1 /* remove */);
+                } else {
+                    (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
+                }
+            }
+        } catch {
+            // Filter apply failed — ignore silently
+        }
+    }
+
+    private readAppliedFilters(options: VisualUpdateOptions): void {
+        try {
+            const jsonFilters = (options as any).jsonFilters || [];
+            const targetToSection = new Map<string, string>();
+            for (const section of this.sections) {
+                if (section.filterTarget) {
+                    const key = `${section.filterTarget.table}.${section.filterTarget.column}`;
+                    targetToSection.set(key, section.name);
+                }
+            }
+
+            for (const f of jsonFilters) {
+                if (!f?.target) continue;
+                const key = `${f.target.table || ""}.${f.target.column || ""}`;
+                const sectionName = targetToSection.get(key);
+                if (sectionName) {
+                    this.selections.set(sectionName, new Set(f.values || []));
+                }
+            }
+        } catch {
+            // Ignore filter read errors
+        }
+    }
+
+    /* ═══════════════════════════════════════
+     * DROPDOWN GROUP — fixed-position panels
      * ═══════════════════════════════════════ */
 
     private createDropdownGroup(
@@ -495,221 +611,193 @@ export class Visual implements IVisual {
         trigger.className = "osb-dropdown-trigger";
         trigger.textContent = label;
 
-        const panel = document.createElement("div");
-        panel.className = "osb-dropdown-panel";
-
         trigger.addEventListener("click", (e: MouseEvent) => {
             e.stopPropagation();
-            if (this.openDropdownType === id) {
+            if (this.openDropdownId === id) {
                 this.closeAllDropdowns();
                 return;
             }
             this.closeAllDropdowns();
-            this.openDropdownType = id;
+            this.openDropdownId = id;
             trigger.classList.add("open");
 
-            const dir = this.formattingSettings.slicerBarCard.fanDirection.value.value || "auto";
+            // Create fixed-position panel attached to document body
+            const panel = document.createElement("div");
+            panel.className = "osb-fixed-panel";
+            this.activePanel = panel;
 
-            // Hide other slicers and shift group for auto/right modes
-            this.slicerRow.classList.add("has-active-group");
-            group.classList.add("active-group");
-
-            if (dir === "auto" || dir === "right") {
-                // Shift group to left edge for maximum right-fan space
-                const rowRect = this.slicerRow.getBoundingClientRect();
-                const groupRect = group.getBoundingClientRect();
-                const shiftX = groupRect.left - rowRect.left - 12;
-                if (shiftX > 0) {
-                    group.style.position = "relative";
-                    group.style.left = `-${shiftX}px`;
-                    group.style.zIndex = "1001";
-                }
-            } else if (dir === "left") {
-                // Shift group to right edge for maximum left-fan space
-                const rowRect = this.slicerRow.getBoundingClientRect();
-                const groupRect = group.getBoundingClientRect();
-                const shiftX = (rowRect.right - 12) - groupRect.right;
-                if (shiftX > 0) {
-                    group.style.position = "relative";
-                    group.style.left = `${shiftX}px`;
-                    group.style.zIndex = "1001";
-                }
-            }
-
-            panel.innerHTML = "";
+            // Build content
             buildItems(panel);
             this.applyPanelColors(panel, trigger);
 
-            panel.classList.remove("flip-left");
-            if (dir === "left") {
-                panel.classList.add("flip-left");
-            }
-            panel.classList.add("open");
+            // Add to body so it escapes the scroll container
+            document.body.appendChild(panel);
 
-            // Auto: safety check for overflow
-            if (dir === "auto") {
-                const panelRect = panel.getBoundingClientRect();
-                if (panelRect.right > window.innerWidth - 8) {
-                    panel.classList.add("flip-left");
-                }
-            }
+            // Position relative to trigger
+            const triggerRect = trigger.getBoundingClientRect();
+            const dir = String(this.formattingSettings.slicerBarCard.fanDirection.value.value || "auto");
+
+            this.positionPanel(panel, triggerRect, dir);
+
+            // Stop clicks inside panel from closing it
+            panel.addEventListener("click", (ev) => ev.stopPropagation());
         });
 
         group.appendChild(trigger);
-        group.appendChild(panel);
         return group;
     }
 
+    private positionPanel(panel: HTMLElement, triggerRect: DOMRect, dir: string): void {
+        const margin = 4;
+
+        // Make visible to measure
+        panel.style.visibility = "hidden";
+        panel.style.display = "inline-flex";
+
+        const panelRect = panel.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        let resolvedDir = dir;
+        if (resolvedDir === "auto") {
+            const spaceRight = vw - triggerRect.right - margin;
+            const spaceLeft = triggerRect.left - margin;
+            const spaceDown = vh - triggerRect.bottom - margin;
+            const spaceUp = triggerRect.top - margin;
+
+            if (spaceRight >= panelRect.width) {
+                resolvedDir = "right";
+            } else if (spaceLeft >= panelRect.width) {
+                resolvedDir = "left";
+            } else if (spaceDown >= panelRect.height) {
+                resolvedDir = "down";
+            } else if (spaceUp >= panelRect.height) {
+                resolvedDir = "up";
+            } else {
+                resolvedDir = spaceRight >= spaceLeft ? "right" : "left";
+            }
+        }
+
+        let top: number;
+        let left: number;
+
+        switch (resolvedDir) {
+            case "right":
+                left = triggerRect.right + margin;
+                top = triggerRect.top + triggerRect.height / 2 - panelRect.height / 2;
+                break;
+            case "left":
+                left = triggerRect.left - panelRect.width - margin;
+                top = triggerRect.top + triggerRect.height / 2 - panelRect.height / 2;
+                break;
+            case "down":
+                left = triggerRect.left;
+                top = triggerRect.bottom + margin;
+                break;
+            case "up":
+                left = triggerRect.left;
+                top = triggerRect.top - panelRect.height - margin;
+                break;
+            default:
+                left = triggerRect.right + margin;
+                top = triggerRect.top + triggerRect.height / 2 - panelRect.height / 2;
+        }
+
+        // Clamp to viewport
+        if (top < margin) top = margin;
+        if (top + panelRect.height > vh - margin) top = vh - margin - panelRect.height;
+        if (left < margin) left = margin;
+        if (left + panelRect.width > vw - margin) left = vw - margin - panelRect.width;
+
+        panel.style.top = top + "px";
+        panel.style.left = left + "px";
+
+        panel.style.visibility = "visible";
+    }
+
     private closeAllDropdowns(): void {
-        this.target.querySelectorAll(".osb-dropdown-panel.open").forEach(
-            (p) => p.classList.remove("open")
-        );
+        // Remove fixed panel from body
+        if (this.activePanel) {
+            this.activePanel.remove();
+            this.activePanel = null;
+        }
         this.target.querySelectorAll(".osb-dropdown-trigger.open").forEach(
             (t) => t.classList.remove("open")
         );
-        // Reset shifted groups and restore visibility
-        this.slicerRow.classList.remove("has-active-group");
-        this.target.querySelectorAll(".osb-slicer-group").forEach((g: HTMLElement) => {
-            g.classList.remove("active-group");
-            g.style.position = "";
-            g.style.left = "";
-            g.style.zIndex = "";
-        });
-        this.openDropdownType = "";
+        this.openDropdownId = "";
     }
 
     /* ═══════════════════════════════════════
-     * FAN-OUT COLOUR APPLICATION
+     * PANEL COLOUR APPLICATION
      * ═══════════════════════════════════════ */
 
     private applyPanelColors(panel: HTMLElement, trigger: HTMLElement): void {
         const s = this.formattingSettings.slicerBarCard;
-        const chipBg = s.chipColor.value.value;       // selected background
-        const chipText = s.chipTextColor.value.value;  // selected text
-        const borderClr = s.borderColor.value.value;   // borders
-        const bgClr = s.backgroundColor.value.value;   // panel background
-        const labelClr = s.labelColor.value.value;     // default item text
+        const hc = this.isHighContrast;
+        const fg = hc ? this.colorPalette.foreground.value : "";
+        const bg = hc ? this.colorPalette.background.value : "";
+        const fgSelected = hc && (this.colorPalette as any).foregroundSelected
+            ? (this.colorPalette as any).foregroundSelected.value : fg;
 
-        // Panel itself
+        const chipBg = hc ? fg : s.chipColor.value.value;
+        const chipText = hc ? bg : s.chipTextColor.value.value;
+        const borderClr = hc ? fg : s.borderColor.value.value;
+        const bgClr = hc ? bg : s.backgroundColor.value.value;
+        const labelClr = hc ? fg : s.labelColor.value.value;
+        const itemBg = hc ? bg : "#ffffff";
+        const itemText = hc ? fg : "#1a1a1a";
+        const hoverBg = hc ? bg : (s.backgroundColor.value.value === "#ffffff" ? "#f0eef8" : s.backgroundColor.value.value);
+
         panel.style.background = bgClr;
         panel.style.borderColor = borderClr;
 
-        // Trigger button
         trigger.style.borderColor = borderClr;
         trigger.style.background = bgClr;
         trigger.style.color = labelClr;
 
-        // Action buttons (Select all / Clear)
         panel.querySelectorAll(".osb-panel-action-btn").forEach((btn: HTMLElement) => {
             btn.style.color = chipBg;
         });
 
-        // Search input
         panel.querySelectorAll(".osb-panel-search").forEach((inp: HTMLElement) => {
             inp.style.borderColor = borderClr;
         });
 
-        // Each dropdown item
         panel.querySelectorAll(".osb-dropdown-item").forEach((item: HTMLElement) => {
             const isSelected = item.classList.contains("selected");
             if (isSelected) {
-                item.style.background = chipBg;
+                item.style.background = hc ? fgSelected : chipBg;
                 item.style.color = chipText;
-                item.style.borderColor = chipBg;
+                item.style.borderColor = hc ? fgSelected : chipBg;
             } else {
-                item.style.background = "#ffffff";
-                item.style.color = "#1a1a1a";
+                item.style.background = itemBg;
+                item.style.color = itemText;
                 item.style.borderColor = borderClr;
             }
 
-            // Hover/unhover for non-selected items
             item.addEventListener("mouseenter", () => {
                 if (!item.classList.contains("selected")) {
                     item.style.borderColor = chipBg;
                     item.style.color = chipBg;
-                    item.style.background = bgClr === "#ffffff" ? "#f0eef8" : bgClr;
+                    item.style.background = hoverBg;
                 }
             });
             item.addEventListener("mouseleave", () => {
                 if (!item.classList.contains("selected")) {
                     item.style.borderColor = borderClr;
-                    item.style.color = "#1a1a1a";
-                    item.style.background = "#ffffff";
+                    item.style.color = itemText;
+                    item.style.background = itemBg;
                 }
             });
         });
     }
 
-    /* ═══════════════════════════════════════
-     * FILTER APPLICATION
-     * ═══════════════════════════════════════ */
-
-    private applyFilter(filter: BasicFilter | null, action: string): void {
-        this.selfFilterPending = true;
-        try {
-            if (filter) {
-                (this.host as any).applyJsonFilter(filter, "general", "filter", 0 /* merge */);
-            } else {
-                // Build a dummy filter for the target to remove it
-                const targetMap: Record<string, { table: string; column: string }> = {
-                    datePeriod: { table: "Date Periods", column: "Type" },
-                    beat: { table: "DimBeat", column: "Beat" },
-                };
-                if (action.startsWith("pageFilter_")) {
-                    const col = action.replace("pageFilter_", "");
-                    const pf = this.data.pageFilters.find(p => p.column === col);
-                    if (pf) targetMap[action] = { table: pf.table, column: pf.column };
-                }
-                const target = targetMap[action];
-                if (target) {
-                    const removeFilter: BasicFilter = {
-                        $schema: BASIC_FILTER_SCHEMA,
-                        target,
-                        operator: "In",
-                        values: [],
-                        filterType: 1,
-                    };
-                    (this.host as any).applyJsonFilter(removeFilter, "general", "filter", 1 /* remove */);
-                } else {
-                    (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
-                }
-            }
-        } catch (err) {
-            console.warn(`SlicerBar: filter apply failed (${action})`, err);
-        }
-    }
-
-    private readAppliedFilters(options: VisualUpdateOptions): void {
-        try {
-            const jsonFilters = (options as any).jsonFilters || [];
-            let foundDatePeriod = false;
-            let foundBeat = false;
-
-            for (const f of jsonFilters) {
-                if (!f?.target) continue;
-                const tbl = f.target.table || "";
-                const col = f.target.column || "";
-
-                if (tbl === "Date Periods" && col === "Type") {
-                    this.selectedDatePeriod = f.values?.[0] || "";
-                    foundDatePeriod = true;
-                } else if (tbl === "DimBeat" && col === "Beat") {
-                    this.selectedBeats = new Set(f.values || []);
-                    foundBeat = true;
-                } else {
-                    this.selectedPageFilters.set(col, new Set(f.values || []));
-                }
-            }
-
-            if (!foundDatePeriod) this.selectedDatePeriod = "";
-            if (!foundBeat) this.selectedBeats = new Set();
-        } catch {
-            // Ignore filter read errors
-        }
-    }
-
-
     public destroy(): void {
         this.closeAllDropdowns();
+        document.removeEventListener("click", this.documentClickHandler);
+        if (this.activePanel) {
+            this.activePanel.remove();
+            this.activePanel = null;
+        }
     }
 }

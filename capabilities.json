@@ -3,26 +3,50 @@
         {
             "displayName": "Category",
             "name": "category",
-            "description": "SlicerConfig[Category] — row type: Period, Beat, Filter1, Filter2",
+            "description": "Section grouping — each distinct value creates a slicer section",
             "kind": "Grouping"
         },
         {
             "displayName": "Label",
             "name": "label",
-            "description": "SlicerConfig[Label] — display text (period type, beat name, filter value)",
+            "description": "Display text for each item within a section",
             "kind": "Grouping"
         },
         {
             "displayName": "Value",
             "name": "value",
-            "description": "SlicerConfig[Value] — metadata (Table.Column for filters)",
+            "description": "Filter target as Table.Column (e.g. DimDate.Period). Leave empty for static display.",
             "kind": "Grouping"
         },
         {
             "displayName": "Sort order",
             "name": "sortOrder",
-            "description": "SlicerConfig[SortOrder] — numeric sort within each category",
+            "description": "Numeric sort within each section",
             "kind": "Measure"
+        },
+        {
+            "displayName": "Display mode",
+            "name": "displayMode",
+            "description": "Render style per section: Chips or Dropdown. Overrides formatting panel default.",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Selection mode",
+            "name": "selectionMode",
+            "description": "Selection behaviour per section: Single or Multi. Overrides formatting panel default.",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Short label",
+            "name": "shortLabel",
+            "description": "Secondary text shown when item is selected (e.g. date range). Optional.",
+            "kind": "Grouping"
+        },
+        {
+            "displayName": "Default value",
+            "name": "defaultValue",
+            "description": "Label of the item to auto-select on load. Use a measure per page for dynamic defaults.",
+            "kind": "Grouping"
         }
     ],
     "objects": {
@@ -46,31 +70,63 @@
                 "chipTextColor": {
                     "type": { "fill": { "solid": { "color": true } } }
                 },
-                "datePeriodStyle": {
+                "defaultDisplayMode": {
                     "type": {
                         "enumeration": [
-                            { "displayName": "Buttons", "value": "buttons" },
+                            { "displayName": "Auto", "value": "auto" },
+                            { "displayName": "Chips", "value": "chips" },
                             { "displayName": "Dropdown", "value": "dropdown" }
                         ]
                     }
                 },
-                "datePeriodDefault": {
-                    "type": { "text": true }
+                "defaultSelectionMode": {
+                    "type": {
+                        "enumeration": [
+                            { "displayName": "Single", "value": "single" },
+                            { "displayName": "Multi", "value": "multi" }
+                        ]
+                    }
                 },
-                "maxVisiblePeriods": {
+                "maxVisibleChips": {
                     "type": { "numeric": true }
                 },
-                "maxVisibleSlicers": {
+                "maxVisibleSections": {
                     "type": { "numeric": true }
                 },
                 "fanDirection": {
                     "type": {
                         "enumeration": [
                             { "displayName": "Auto", "value": "auto" },
-                            { "displayName": "Right", "value": "right" },
-                            { "displayName": "Left", "value": "left" }
+                            { "displayName": "Fan Right", "value": "right" },
+                            { "displayName": "Fan Left", "value": "left" },
+                            { "displayName": "Fan Up", "value": "up" },
+                            { "displayName": "Fan Down", "value": "down" }
                         ]
                     }
+                }
+            }
+        },
+        "sectionOverride": {
+            "properties": {
+                "displayMode": {
+                    "type": {
+                        "enumeration": [
+                            { "displayName": "Auto", "value": "auto" },
+                            { "displayName": "Chips", "value": "chips" },
+                            { "displayName": "Dropdown", "value": "dropdown" }
+                        ]
+                    }
+                },
+                "selectionMode": {
+                    "type": {
+                        "enumeration": [
+                            { "displayName": "Single", "value": "single" },
+                            { "displayName": "Multi", "value": "multi" }
+                        ]
+                    }
+                },
+                "defaultValue": {
+                    "type": { "text": true }
                 }
             }
         }
@@ -82,7 +138,11 @@
                     "select": [
                         { "for": { "in": "category" } },
                         { "for": { "in": "label" } },
-                        { "for": { "in": "value" } }
+                        { "for": { "in": "value" } },
+                        { "for": { "in": "displayMode" } },
+                        { "for": { "in": "selectionMode" } },
+                        { "for": { "in": "shortLabel" } },
+                        { "for": { "in": "defaultValue" } }
                     ],
                     "dataReductionAlgorithm": { "top": { "count": 1000 } }
                 },
@@ -96,5 +156,16 @@
     ],
     "privileges": [
         { "name": "LocalStorage", "essential": false }
-    ]
+    ],
+    "supportsHighlight": true,
+    "supportsKeyboardFocus": true,
+    "supportsLandingPage": true,
+    "supportsEmptyDataView": true,
+    "supportsMultiVisualSelection": true,
+    "tooltips": {
+        "supportedTypes": {
+            "default": true,
+            "canvas": true
+        }
+    }
 }

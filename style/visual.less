@@ -1,4 +1,4 @@
-/* OptiStock Slicer Bar */
+/* Slicer Bar */
 @font-stack: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 
 .osb-slicer-row {
@@ -9,8 +9,23 @@
     gap: 6px;
     font-family: @font-stack;
     box-sizing: border-box;
-    overflow: visible;
+    overflow-x: auto;
+    overflow-y: hidden;
     position: relative;
+
+    /* Thin scrollbar for horizontal overflow */
+    &::-webkit-scrollbar {
+        height: 3px;
+    }
+    &::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.15);
+        border-radius: 3px;
+    }
+    &::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
 }
 
 .osb-slicer-label {
@@ -30,7 +45,7 @@
     margin: 0 2px;
 }
 
-/* ─── Period Chips ─── */
+/* ─── Chips ─── */
 
 .osb-period-chip {
     padding: 2px 10px;
@@ -86,7 +101,7 @@
     transition: border-color 0.12s;
 
     &::after {
-        content: "\25B8"; /* ▸ right-pointing for horizontal */
+        content: "\25B8"; /* ▸ */
         font-size: 9px;
         color: #5e5d5a;
     }
@@ -106,60 +121,36 @@
     }
 }
 
-/* ─── Slicer Group (trigger + dropdown anchor) ─── */
+/* ─── Slicer Group (trigger wrapper) ─── */
 
 .osb-slicer-group {
     position: relative;
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
-    transition: left 0.15s ease;
-}
-
-/* Hide other slicer elements when one group is active */
-.osb-slicer-row.has-active-group .osb-slicer-label,
-.osb-slicer-row.has-active-group .osb-slicer-sep,
-.osb-slicer-row.has-active-group .osb-period-chip,
-.osb-slicer-row.has-active-group .osb-slicer-group:not(.active-group) {
-    visibility: hidden;
 }
 
 /* ═══════════════════════════════════════
- * HORIZONTAL SPREAD PANEL (items flow as a row)
+ * FIXED PANEL — attached to document.body,
+ * escapes scroll container entirely
  * ═══════════════════════════════════════ */
 
-.osb-dropdown-panel {
-    position: absolute;
-    left: 100%;
-    top: 50%;
-    transform: translateY(-50%);
-    margin-left: 4px;
+.osb-fixed-panel {
+    position: fixed;
     background: #ffffff;
     border: 1px solid #e8e2d3;
     border-radius: 14px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     font-family: @font-stack;
-    display: none;
+    display: inline-flex;
     flex-direction: row;
     align-items: center;
     flex-wrap: nowrap;
     gap: 4px;
     padding: 3px 6px;
     box-sizing: border-box;
-    z-index: 1000;
+    z-index: 10000;
     white-space: nowrap;
-
-    &.open {
-        display: inline-flex;
-    }
-
-    /* Flip: spread left instead of right */
-    &.flip-left {
-        left: auto;
-        right: 100%;
-        margin-left: 0;
-        margin-right: 4px;
-    }
 }
 
 .osb-panel-search {
@@ -254,57 +245,22 @@
     }
 }
 
-/* ═══════════════════════════════════════
- * SELECTED VALUE CHIPS (removable)
- * ═══════════════════════════════════════ */
+/* ─── Static Display Values ─── */
 
-.osb-chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 4px 12px 6px;
-    background: #faf9f6;
-    min-height: 0;
-    font-family: @font-stack;
-
-    &:empty {
-        display: none;
-    }
-}
-
-.osb-value-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    padding: 1px 6px 1px 8px;
-    border-radius: 10px;
-    font-size: 10px;
+.osb-static-value {
+    font-size: 11px;
     font-weight: 500;
-    background: #e8e5f5;
-    color: #130064;
-    border: 1px solid #d4d0ea;
     white-space: nowrap;
-    line-height: 1.5;
+    flex-shrink: 0;
 }
 
-.osb-chip-close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    font-size: 10px;
-    font-weight: 700;
-    cursor: pointer;
-    color: #130064;
-    background: transparent;
-    border: none;
-    font-family: @font-stack;
-    line-height: 1;
-    transition: background 0.1s;
+/* ─── Short Label (date range, subtitle) ─── */
 
-    &:hover {
-        background: #d4d0ea;
-    }
+.osb-short-label {
+    font-size: 10px;
+    font-weight: 400;
+    font-style: italic;
+    white-space: nowrap;
+    flex-shrink: 0;
+    opacity: 0.7;
 }
