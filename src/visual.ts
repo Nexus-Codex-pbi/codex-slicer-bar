@@ -133,29 +133,32 @@ export class Visual implements IVisual {
 
             if (this.selfFilterPending) {
                 this.selfFilterPending = false;
-            } else if (!this.initialised) {
+            } else {
+                // Read filters on every update to respond to cross-filtering from other visuals
                 this.readAppliedFilters(options);
-                this.initialised = true;
 
-                // Auto-select defaults for sections that have one configured
-                for (const section of this.sections) {
-                    if (!section.defaultValue) continue;
-                    const sel = this.selections.get(section.name);
-                    if (sel && sel.size > 0) continue;
-                    const match = section.items.find(
-                        item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
-                    );
-                    if (match) {
-                        this.selections.set(section.name, new Set([match.label]));
-                        // Apply filter if section has a filter target
-                        if (section.filterTarget) {
-                            this.applyFilter({
-                                $schema: BASIC_FILTER_SCHEMA,
-                                target: section.filterTarget,
-                                operator: "In",
-                                values: [match.label],
-                                filterType: 1,
-                            }, `section_${section.name}`);
+                // Auto-select defaults only on first init
+                if (!this.initialised) {
+                    this.initialised = true;
+                    for (const section of this.sections) {
+                        if (!section.defaultValue) continue;
+                        const sel = this.selections.get(section.name);
+                        if (sel && sel.size > 0) continue;
+                        const match = section.items.find(
+                            item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
+                        );
+                        if (match) {
+                            this.selections.set(section.name, new Set([match.label]));
+                            // Apply filter if section has a filter target
+                            if (section.filterTarget) {
+                                this.applyFilter({
+                                    $schema: BASIC_FILTER_SCHEMA,
+                                    target: section.filterTarget,
+                                    operator: "In",
+                                    values: [match.label],
+                                    filterType: 1,
+                                }, `section_${section.name}`);
+                            }
                         }
                     }
                 }

@@ -135,20 +135,18 @@
         {
             "categorical": {
                 "categories": {
-                    "select": [
-                        { "for": { "in": "category" } },
-                        { "for": { "in": "label" } },
-                        { "for": { "in": "value" } },
-                        { "for": { "in": "displayMode" } },
-                        { "for": { "in": "selectionMode" } },
-                        { "for": { "in": "shortLabel" } },
-                        { "for": { "in": "defaultValue" } }
-                    ],
+                    "for": { "in": "category" },
                     "dataReductionAlgorithm": { "top": { "count": 1000 } }
                 },
                 "values": {
                     "select": [
-                        { "for": { "in": "sortOrder" } }
+                        { "bind": { "to": "label" } },
+                        { "bind": { "to": "value" } },
+                        { "bind": { "to": "sortOrder" } },
+                        { "bind": { "to": "displayMode" } },
+                        { "bind": { "to": "selectionMode" } },
+                        { "bind": { "to": "shortLabel" } },
+                        { "bind": { "to": "defaultValue" } }
                     ]
                 }
             }
