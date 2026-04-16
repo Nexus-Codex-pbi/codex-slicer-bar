@@ -60,21 +60,12 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
 
     const cat = dataView.categorical;
     const categories = cat.categories || [];
-    const values = cat.values || [];
 
     const roleToCatIdx: Record<string, number> = {};
     categories.forEach((c, i) => {
         const roles = c.source.roles || {};
         for (const role of Object.keys(roles)) {
             if (roles[role]) roleToCatIdx[role] = i;
-        }
-    });
-
-    const roleToValIdx: Record<string, number> = {};
-    values.forEach((v, i) => {
-        const roles = v.source.roles || {};
-        for (const role of Object.keys(roles)) {
-            if (roles[role]) roleToValIdx[role] = i;
         }
     });
 
@@ -85,7 +76,7 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
     const defaultValueIdx = roleToCatIdx["defaultValue"];
     const displayModeIdx = roleToCatIdx["displayMode"];
     const selectionModeIdx = roleToCatIdx["selectionMode"];
-    const sortIdx = roleToValIdx["sortOrder"];
+    const sortIdx = roleToCatIdx["sortOrder"];
 
     if (catIdx === undefined || labelIdx === undefined) return [];
 
@@ -99,7 +90,7 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
             value: valueIdx !== undefined ? String(categories[valueIdx].values[r] || "") : "",
             shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] || "") : "",
             defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] || "") : "",
-            sortOrder: sortIdx !== undefined ? Number(values[sortIdx].values[r]) || 0 : 0,
+            sortOrder: sortIdx !== undefined ? Number(categories[sortIdx].values[r]) || 0 : 0,
             displayMode: displayModeIdx !== undefined ? String(categories[displayModeIdx].values[r] || "").toLowerCase() : "",
             selectionMode: selectionModeIdx !== undefined ? String(categories[selectionModeIdx].values[r] || "").toLowerCase() : "",
         });
