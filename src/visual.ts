@@ -118,15 +118,38 @@ export class Visual implements IVisual {
 
             const parsed = parseDataView(dv);
 
-            // Cache the fullest data — filtered updates return fewer rows
-            const parsedCount = parsed.reduce((sum, s) => sum + s.items.length, 0);
-            const cachedCount = this.cachedSections
-                ? this.cachedSections.reduce((sum, s) => sum + s.items.length, 0)
-                : 0;
-            if (!this.cachedSections || parsedCount >= cachedCount) {
-                this.cachedSections = parsed;
+            // Per-section cache: keep the fullest set of items ever seen for each
+            // section. This lets us preserve our own slicer options after applying
+            // our own filter (which shrinks the dataView), while still letting
+            // EXTERNAL filters from other visuals/slicers narrow the displayed
+            // items (the filter-in certification requirement).
+            const nextCache: SlicerSection[] = [];
+            const parsedByName = new Map<string, SlicerSection>();
+            for (const ps of parsed) parsedByName.set(ps.name, ps);
+
+            for (const ps of parsed) {
+                const cached = this.cachedSections?.find(c => c.name === ps.name);
+                if (cached && cached.items.length > ps.items.length) {
+                    // Merge: keep previously-seen fullest items as cache
+                    nextCache.push({ ...ps, items: cached.items });
+                } else {
+                    nextCache.push(ps);
+                }
             }
-            this.sections = this.cachedSections;
+            this.cachedSections = nextCache;
+
+            // For display: sections that THIS visual has actively filtered keep
+            // the full cached items (so the user can still pick other values);
+            // sections without our own selection use the parsed items, which
+            // reflect any external filter-in from other visuals.
+            this.sections = parsed.map(ps => {
+                const ownSel = this.selections.get(ps.name);
+                if (ownSel && ownSel.size > 0) {
+                    const cached = nextCache.find(c => c.name === ps.name);
+                    if (cached) return cached;
+                }
+                return ps;
+            });
 
             // Apply formatting panel defaults where data doesn't specify
             this.applyFormattingDefaults();
@@ -140,6 +163,7 @@ export class Visual implements IVisual {
                 // Auto-select defaults only on first init
                 if (!this.initialised) {
                     this.initialised = true;
+                    let appliedAnyDefault = false;
                     for (const section of this.sections) {
                         if (!section.defaultValue) continue;
                         const sel = this.selections.get(section.name);
@@ -149,17 +173,11 @@ export class Visual implements IVisual {
                         );
                         if (match) {
                             this.selections.set(section.name, new Set([match.label]));
-                            // Apply filter if section has a filter target
-                            if (section.filterTarget) {
-                                this.applyFilter({
-                                    $schema: BASIC_FILTER_SCHEMA,
-                                    target: section.filterTarget,
-                                    operator: "In",
-                                    values: [match.label],
-                                    filterType: 1,
-                                }, `section_${section.name}`);
-                            }
+                            if (section.filterTarget) appliedAnyDefault = true;
                         }
+                    }
+                    if (appliedAnyDefault) {
+                        this.applyAllFilters();
                     }
                 }
             }
@@ -529,49 +547,46 @@ export class Visual implements IVisual {
      * FILTER APPLICATION
      * ═══════════════════════════════════════ */
 
-    private applySectionFilter(section: SlicerSection): void {
-        if (!section.filterTarget) {
-            return;
-        }
-        const sel = this.selections.get(section.name) || new Set<string>();
-
-        if (sel.size === 0 || sel.size === section.items.length) {
-            this.applyFilter(null, `section_${section.name}`);
-        } else {
-            this.applyFilter({
+    /**
+     * Build a Basic Filter array from ALL sections with an active selection,
+     * then push the full array to PBI in one call. This is the critical
+     * filter-pipeline semantics: PBI keys filters by (objectName,propertyName),
+     * so each call to applyJsonFilter(filter,'general','filter',merge) REPLACES
+     * the previously-applied filter unless we send the complete set every time.
+     * Sending the array ensures Region + Period + Status selections coexist
+     * instead of clobbering each other.
+     */
+    private applyAllFilters(): void {
+        const filters: BasicFilter[] = [];
+        for (const section of this.sections) {
+            if (!section.filterTarget) continue;
+            const sel = this.selections.get(section.name);
+            if (!sel || sel.size === 0) continue;
+            if (sel.size === section.items.length) continue; // all = no filter
+            filters.push({
                 $schema: BASIC_FILTER_SCHEMA,
                 target: section.filterTarget,
                 operator: "In",
                 values: Array.from(sel),
                 filterType: 1,
-            }, `section_${section.name}`);
+            });
         }
-    }
 
-    private applyFilter(filter: BasicFilter | null, action: string): void {
         this.selfFilterPending = true;
         try {
-            if (filter) {
-                (this.host as any).applyJsonFilter(filter, "general", "filter", 0 /* merge */);
+            if (filters.length > 0) {
+                (this.host as any).applyJsonFilter(filters, "general", "filter", 0 /* merge */);
             } else {
-                const sectionName = action.replace("section_", "");
-                const section = this.sections.find(s => s.name === sectionName);
-                if (section?.filterTarget) {
-                    const removeFilter: BasicFilter = {
-                        $schema: BASIC_FILTER_SCHEMA,
-                        target: section.filterTarget,
-                        operator: "In",
-                        values: [],
-                        filterType: 1,
-                    };
-                    (this.host as any).applyJsonFilter(removeFilter, "general", "filter", 1 /* remove */);
-                } else {
-                    (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
-                }
+                (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
             }
         } catch {
             // Filter apply failed — ignore silently
         }
+    }
+
+    // Back-compat shim so existing callers inside this class continue to work.
+    private applySectionFilter(_section: SlicerSection): void {
+        this.applyAllFilters();
     }
 
     private readAppliedFilters(options: VisualUpdateOptions): void {

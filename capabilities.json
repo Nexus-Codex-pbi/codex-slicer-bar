@@ -50,6 +50,14 @@
         }
     ],
     "objects": {
+        "general": {
+            "displayName": "General",
+            "properties": {
+                "filter": {
+                    "type": { "filter": { "selfFilterEnabled": false } }
+                }
+            }
+        },
         "slicerBar": {
             "properties": {
                 "backgroundColor": {
