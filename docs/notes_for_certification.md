@@ -1,20 +1,19 @@
-```
-SOURCE CODE URL: https://github.com/Nexus-Codex-pbi/codex-slicer-bar
-PRODUCT ID: 
-BRANCH: main
-BUILD COMMAND: npm run package
-API VERSION: 5.11.0
-LICENSE: MIT
+Source code: https://github.com/Nexus-Codex-pbi/codex-slicer-bar
+Branch: main
+Build: npm install && pbiviz package
+API version: 5.11.0
+License: MIT
 
-VERIFICATION INSTRUCTIONS:
-1180.2.2.2 Tooltips: Tooltips are implemented using Power BI's standard tooltip service. Hover over any chip or dropdown item to see tooltip information including section name, item label, filter target, and short label when available.
+VERIFICATION INSTRUCTIONS
 
-1180.2.2.3 Filter Out: Cross-filtering is implemented using Power BI's selection manager. Click on any chip or dropdown item to apply filters to other visuals on the report page. Selected items will be highlighted visually.
+1. Open the bundled sample PBIX for this visual.
+2. Visual is pre-bound to representative measures.
+3. All format pane sections in the offer description have working controls.
+4. Right-click anywhere on the visual — context menu appears.
+5. Click on a data element — cross-filters other visuals (if applicable).
+6. Hover — tooltip appears with field/value.
+7. Resize — content remains visible via scroll or responsive SVG.
 
-1180.2.5 Right-click: Right-click context menu is implemented using Power BI's standard context menu API. Right-click anywhere on the visualization to access the standard Power BI context menu with options like "Copy", "Export to PowerPoint", etc.
-
-CONTACT:
-Name: Nexus Codex Support
-Email: support@nexuscodex.nexus
-URL: https://nexuscodex.nexus/support
-```
+CONTACT
+publisher: Nexus Codex
+contact: support@nexuscodex.nexus

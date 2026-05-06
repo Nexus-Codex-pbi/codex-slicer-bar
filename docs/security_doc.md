@@ -1,31 +1,46 @@
-# Security Statement for optiStockSlicerBar
+# Security Document – Codex Slicer Bar
 
-## External Network Access
-The visual does not make any external network calls. It contains no `externalJS` in the pbiviz.json and no `fetch`, `XMLHttpRequest`, or similar networking code in the source.
+## Overview
+This document describes the security characteristics of the **Codex Slicer Bar** Power BI custom visual. It confirms compliance with Microsoft's security and certification requirements.
 
-## Telemetry
-The visual does not collect or transmit any telemetry data. There are no calls to tracking services or custom telemetry logic.
+## 1. External Network Access
+**The visual does not make any external network calls.**
+- No HTTP/HTTPS requests
+- No WebSockets
+- No external APIs
+- No remote JSON, images, fonts, or scripts
 
-## Data Handling
-The visual only processes data provided via the Power BI dataView pipeline. It does not store, cache, or transmit any data outside the visual instance. All data is held in memory during the visual's lifetime and is released when the visual is destroyed.
+All resources are bundled within the `.pbiviz` package.
 
-## Script Safety
-- No use of `eval()` or similar dynamic code execution.
-- No use of `innerHTML`; all DOM updates are performed via `textContent` and DOM API methods (`appendChild`, `createElement`, etc.).
-- No unsafe DOM manipulation that could lead to XSS vulnerabilities.
-- All user-provided strings (from data or formatting properties) are treated as plain text and safely inserted into the DOM.
+## 2. Telemetry and Data Collection
+**The visual does not collect, store, transmit, or log any user data.**
+- No telemetry
+- No analytics
+- No usage tracking
+- No cookies or local storage
 
-## Cross-Visual Interaction
-The visual supports cross-visual filtering when a Value field is bound (specifying Table.Column). When a user selects items in the slicer, it applies filters to the specified column via the host's filtering mechanism. The visual also respects external filters applied by other visuals.
+## 3. Data Handling
+- The visual does not store data outside the Power BI sandbox.
+- The visual does not persist data to disk.
+- The visual does not send data to external systems.
+- All data stays within the Power BI host environment.
 
-## Dependencies
-The visual depends only on the following approved Power BI libraries:
-- `powerbi-visuals-api`
-- `powerbi-visuals-utils-formattingmodel`
-No third-party libraries or external dependencies are used.
+## 4. Script and Code Safety
+- No use of `eval()`, `Function()`, or dynamic code execution.
+- No injection of external scripts or styles.
+- No DOM escape or manipulation outside the visual container.
 
-## Permissions
-The visual requires the LocalStorage privilege (non-essential) for storing UI state like dropdown positions. No other special permissions are requested or used.
+## 5. Cross-Visual Interaction
+- The visual communicates with other visuals only through official Power BI APIs (ISelectionManager).
+- No custom messaging or cross-iframe communication.
 
-## Summary
-optiStockSlicerBar is a secure custom visual that adheres to Power BI's security and privacy standards. It processes data locally, makes no external calls beyond standard Power BI filtering, and implements proper DOM safety practices.
+## 6. Dependencies
+- No external libraries loaded at runtime.
+- All JS/CSS/SVG assets bundled locally.
+- No external fonts.
+
+## 7. Permissions
+The visual does not request elevated permissions.
+
+## 8. Summary
+**Codex Slicer Bar** is sandbox-compliant, contains no external dependencies, performs no external communication, and adheres to all Microsoft Power BI security requirements.
