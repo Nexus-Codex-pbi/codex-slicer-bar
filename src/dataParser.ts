@@ -131,7 +131,15 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         // Section-level sort: minimum sortOrder of all items in this section
         const sectionSort = Math.min(...groupRows.map(r => r.sortOrder));
 
-        // Parse filter target from Value field (Table.Column format)
+        // Resolve filter target — two modes:
+        //   1. Bridge-table mode: explicit "Table.Column" string in the Value
+        //      data column. Required for multi-section composite slicers
+        //      where one bridge feeds N different filter targets.
+        //   2. Simple mode: no Value role bound at all. Derive filterTarget
+        //      from the bound Label column's source.queryName. This is what
+        //      AppSource cert reviewers hit by default — drop a column in,
+        //      expect outward filtering. Without this, policy 1180.2.2.3
+        //      Filter Out soft-fails.
         let filterTarget: { table: string; column: string } | null = null;
         const firstValue = firstRow.value || "";
         if (firstValue.includes(".")) {
@@ -140,6 +148,15 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
                 table: firstValue.substring(0, dotIdx),
                 column: firstValue.substring(dotIdx + 1),
             };
+        } else if (valueIdx === undefined && labelIdx !== undefined) {
+            const qn = (categories[labelIdx].source as { queryName?: string }).queryName || "";
+            const dotIdx = qn.lastIndexOf(".");
+            if (dotIdx > 0) {
+                filterTarget = {
+                    table: qn.substring(0, dotIdx).replace(/^'|'$/g, ""),
+                    column: qn.substring(dotIdx + 1),
+                };
+            }
         }
 
         // Determine interactive state — if no filter target, it's static display
