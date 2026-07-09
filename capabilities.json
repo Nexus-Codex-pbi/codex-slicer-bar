@@ -3,7 +3,7 @@
     {
       "displayName": "Category",
       "name": "category",
-      "description": "Section grouping \u2014 each distinct value creates a slicer section",
+      "description": "Section grouping — each distinct value creates a slicer section",
       "kind": "Grouping"
     },
     {
@@ -109,6 +109,12 @@
             }
           },
           "displayName": "Chip Color"
+        },
+        "chipTransparency": {
+          "type": {
+            "numeric": true
+          },
+          "displayName": "Selected Chip Transparency"
         },
         "chipTextColor": {
           "type": {
@@ -240,6 +246,27 @@
         }
       },
       "displayName": "Section Override"
+    },
+    "background": {
+      "displayName": "Background",
+      "properties": {
+        "backgroundColor": {
+          "displayName": "Background Colour",
+          "type": {
+            "fill": {
+              "solid": {
+                "color": true
+              }
+            }
+          }
+        },
+        "transparency": {
+          "displayName": "Transparency",
+          "type": {
+            "numeric": true
+          }
+        }
+      }
     }
   },
   "dataViewMappings": [

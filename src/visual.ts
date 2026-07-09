@@ -15,7 +15,11 @@ import ITooltipService = powerbi.extensibility.ITooltipService;
 import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import IFilter = powerbi.IFilter;
 
+import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
+import { ColorHelper } from "powerbi-visuals-utils-colorutils";
+
 import { VisualFormattingSettingsModel } from "./settings";
+import { toRgba } from "../../_shared/formatting/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
@@ -63,6 +67,15 @@ export class Visual implements IVisual {
 
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
+
+    // State for the Selected Chip Colour fx wiring (TRANS-04) — this
+    // visual has no per-category selectionId concept (it drives external
+    // filters via applyJsonFilter, not selection IDs), so Chip Colour is
+    // wired as a single global/measure-level rule (dataView.metadata.objects),
+    // matching the pbiKpiCard pilot's single-value fx pattern rather than
+    // the per-instance categorical pattern.
+    private chipColorHelper: ColorHelper | null = null;
+    private resolvedChipColorHex: string = "#130064";
 
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
@@ -115,6 +128,33 @@ export class Visual implements IVisual {
             this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(
                 VisualFormattingSettingsModel, dv
             );
+
+            // ─── Conditional formatting (fx) wiring — Selected Chip Colour (TRANS-04) ──
+            // slicerBarCard.chipColor already carried a bare `instanceKind:
+            // ConstantOrRule` declaration, but with no
+            // `selector`/`altConstantSelector` wired it was inert (Pitfall
+            // 5). Wired here: a dataViewWildcard selector (so a rule can
+            // match this property's instances/totals). This visual has no
+            // per-category selectionId concept to bind an altConstantSelector
+            // to (it drives external filters via applyJsonFilter, never
+            // createSelectionIdBuilder), so altConstantSelector is left
+            // undefined — the same graceful degrade path already
+            // established on pbiKpiCard when no table identity exists.
+            // Resolved at render via the official
+            // ColorHelper.getColorForMeasure(dataView.metadata.objects, ...)
+            // path, falling back to the static format-pane value otherwise.
+            const chipFmt = this.formattingSettings.slicerBarCard;
+            chipFmt.chipColor.selector = dataViewWildcard.createDataViewWildcardSelector(
+                dataViewWildcard.DataViewWildcardMatchingOption.InstancesAndTotals
+            );
+            chipFmt.chipColor.altConstantSelector = undefined;
+            this.chipColorHelper = new ColorHelper(
+                this.host.colorPalette,
+                { objectName: "slicerBar", propertyName: "chipColor" },
+                chipFmt.chipColor.value.value
+            );
+            this.resolvedChipColorHex = this.chipColorHelper.getColorForMeasure(dv.metadata?.objects, "chipColor")
+                ?? chipFmt.chipColor.value.value;
 
             const parsed = parseDataView(dv);
 
@@ -230,7 +270,18 @@ export class Visual implements IVisual {
         let sectionCount = 0;
 
         while (this.slicerRow.firstChild) { this.slicerRow.removeChild(this.slicerRow.firstChild); }
-        this.slicerRow.style.background = hc ? bg : s.backgroundColor.value.value;
+        // Dedicated background layer (D-05): the pre-existing
+        // slicerBarCard.backgroundColor picker already painted
+        // this.slicerRow unconditionally on every render (opaque #ffffff
+        // default), matching the shared Background card's own raw default
+        // — no transparency-default override needed (D-06). Swapped for
+        // the shared Background card's toRgba() read, same swap pattern
+        // the pilot established for pbiKpiCard's cardStyle.backgroundColor
+        // (old backgroundColor capability stays declared, no longer read).
+        const background = this.formattingSettings.background;
+        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
+        const outerBgTransparencyPct = background.transparency.value ?? 0;
+        this.slicerRow.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         this.slicerRow.style.width = viewportWidth + "px";
 
         // Right-justify the bar when fan direction is left
@@ -300,9 +351,16 @@ export class Visual implements IVisual {
 
             if (sel.has(item.label)) {
                 chip.classList.add("selected");
-                chip.style.background = hc ? fgSelected : s.chipColor.value.value;
+                // Per-region transparency (D-05) + fx (TRANS-04): resolved
+                // colour (rule-evaluated if set, else static swatch) fed
+                // through toRgba() with the sibling Selected Chip
+                // Transparency slider. Border stays fully opaque (chip
+                // outline) so the selection affordance stays legible at
+                // any transparency setting (T-07-02).
+                const chipTransparencyPct = s.chipTransparency.value ?? 0;
+                chip.style.background = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
                 chip.style.color = hc ? bg : s.chipTextColor.value.value;
-                chip.style.borderColor = hc ? fgSelected : s.chipColor.value.value;
+                chip.style.borderColor = hc ? fgSelected : this.resolvedChipColorHex;
             }
 
             chip.addEventListener("mousemove", (e: MouseEvent) => {
@@ -757,14 +815,28 @@ export class Visual implements IVisual {
         const fgSelected = hc && (this.colorPalette as any).foregroundSelected
             ? (this.colorPalette as any).foregroundSelected.value : fg;
 
-        const chipBg = hc ? fg : s.chipColor.value.value;
+        // Dedicated background layer (D-05): same shared Background card
+        // + toRgba() read as renderSlicerBar's this.slicerRow paint (same
+        // underlying colour, this is a second render site for it — the
+        // floating dropdown panel/trigger — not a new colour surface).
+        const background = this.formattingSettings.background;
+        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
+        const outerBgTransparencyPct = background.transparency.value ?? 0;
+
+        // chipBg stays OPAQUE — used for text/border legibility (action
+        // button text colour, selected-item border) per T-07-02; only the
+        // selected-item FILL (chipFill below) carries the transparency +
+        // fx-resolved colour.
+        const chipBg = hc ? fg : this.resolvedChipColorHex;
+        const chipTransparencyPct = s.chipTransparency.value ?? 0;
+        const chipFill = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
         const chipText = hc ? bg : s.chipTextColor.value.value;
         const borderClr = hc ? fg : s.borderColor.value.value;
-        const bgClr = hc ? bg : s.backgroundColor.value.value;
+        const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         const labelClr = hc ? fg : s.labelColor.value.value;
         const itemBg = hc ? bg : "#ffffff";
         const itemText = hc ? fg : "#1a1a1a";
-        const hoverBg = hc ? bg : (s.backgroundColor.value.value === "#ffffff" ? "#f0eef8" : s.backgroundColor.value.value);
+        const hoverBg = hc ? bg : (outerBgHex === "#ffffff" ? "#f0eef8" : toRgba(outerBgHex, outerBgTransparencyPct));
 
         panel.style.background = bgClr;
         panel.style.borderColor = borderClr;
@@ -784,7 +856,7 @@ export class Visual implements IVisual {
         panel.querySelectorAll(".osb-dropdown-item").forEach((item: HTMLElement) => {
             const isSelected = item.classList.contains("selected");
             if (isSelected) {
-                item.style.background = hc ? fgSelected : chipBg;
+                item.style.background = chipFill;
                 item.style.color = chipText;
                 item.style.borderColor = hc ? fgSelected : chipBg;
             } else {

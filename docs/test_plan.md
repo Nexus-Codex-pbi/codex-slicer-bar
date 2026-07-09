@@ -39,3 +39,21 @@
 - [ ] Demonstrates all features (chips, dropdowns, single/multi select, overflow, fan direction)
 - [ ] Demonstrates formatting options (all format pane sections)
 - [ ] Demonstrates interactions (click-to-filter, context menu, tooltips, keyboard)
+
+## 7. Outer Background Transparency (TRANS-01/02/03)
+- [ ] Background card exposes Colour + Transparency (0-100) controls
+- [ ] Transparency 0 = opaque (matches pre-upgrade default; old saved reports render pixel-identical)
+- [ ] Transparency 50 shows report canvas bleeding through the slicer bar AND the floating dropdown panel evenly
+- [ ] Transparency 100 = fully transparent slicer bar + panel
+- [ ] Verified in both light and dark report themes
+
+## 8. Selected Chip Transparency + Selection-Chrome Legibility (D-05, T-07-02)
+- [ ] Selected Chip Transparency slider (Slicer Bar card) affects the compact chip fill AND the dropdown panel's selected item fill identically
+- [ ] Selected Chip Transparency 0 = opaque (matches pre-upgrade default)
+- [ ] At Transparency 100, the selected chip/item border + text remain fully opaque — selection state stays visually distinguishable from unselected items even when the fill is fully transparent
+- [ ] Multi-select mode: multiple selected chips remain individually distinguishable at 50% transparency
+
+## 9. Conditional Formatting / fx (TRANS-04)
+- [ ] Selected chip swatch (Slicer Bar card) shows the fx button in the format pane
+- [ ] Setting a measure-level rule resolves the selected-chip/selected-item colour suite-wide
+- [ ] Filter apply/remove logic (applyAllFilters, per-section cache) is unaffected by the fx/transparency changes — verified via `git diff` showing zero edits to applyAllFilters/readAppliedFilters/parseDataView

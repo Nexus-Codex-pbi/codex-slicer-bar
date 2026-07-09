@@ -7,6 +7,8 @@ import FormattingSettingsCard = formattingSettings.SimpleCard;
 import FormattingSettingsSlice = formattingSettings.Slice;
 import FormattingSettingsModel = formattingSettings.Model;
 
+import { BackgroundSettings } from "../../_shared/formatting/backgroundSettings";
+
 const ConstantOrRule = powerbi.VisualEnumerationInstanceKinds.ConstantOrRule;
 
 export class SlicerBarSettings extends FormattingSettingsCard {
@@ -41,6 +43,23 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         displayName: "Selected chip",
         value: { value: "#130064" },
         instanceKind: ConstantOrRule
+    });
+    // Per-region transparency (D-05) sibling to the existing Selected chip
+    // colour above — applied to the selected-chip fill in BOTH the compact
+    // chip button and the dropdown panel's selected item (same underlying
+    // colour, two render sites). Default 0 (opaque): the selected chip is
+    // ALWAYS painted a solid colour today, never "unpainted" (T-07-02:
+    // selection affordance must stay legible — dedicated layer, not
+    // whole-root opacity).
+    chipTransparency = new formattingSettings.Slider({
+        name: "chipTransparency",
+        displayName: "Selected Chip Transparency",
+        description: "Transparency applied to the selected-chip fill colour",
+        value: 0,
+        options: {
+            minValue: { type: powerbi.visuals.ValidatorType.Min, value: 0 },
+            maxValue: { type: powerbi.visuals.ValidatorType.Max, value: 100 }
+        }
     });
     chipTextColor = new formattingSettings.ColorPicker({
         name: "chipTextColor",
@@ -96,6 +115,7 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         this.labelColor,
         this.labelFontSize,
         this.chipColor,
+        this.chipTransparency,
         this.chipTextColor,
         this.defaultDisplayMode,
         this.defaultSelectionMode,
@@ -107,5 +127,17 @@ export class SlicerBarSettings extends FormattingSettingsCard {
 
 export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     slicerBarCard = new SlicerBarSettings();
-    cards = [this.slicerBarCard];
+    background = new BackgroundSettings();
+
+    // No transparency-default override here (unlike most of this batch):
+    // pbiSlicerBar's PRE-EXISTING default was already a genuine opaque-white
+    // happy path — confirmed via direct inspection of src/visual.ts's
+    // renderSlicerBar(): `this.slicerRow.style.background` is set
+    // unconditionally on every render (before any dataView/empty check),
+    // reading the old `slicerBarCard.backgroundColor` (default #ffffff),
+    // matching the pbiKpiCard/pbiKpiSparklineCard pattern rather than the
+    // more common "never painted" case. The shared Background card's own
+    // raw default (opaque white, transparency 0) is pixel-identical.
+
+    cards = [this.slicerBarCard, this.background];
 }
