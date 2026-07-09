@@ -18,7 +18,7 @@ import IFilter = powerbi.IFilter;
 import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
-import { VisualFormattingSettingsModel } from "./settings";
+import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
 import { toRgba } from "../../_shared/formatting/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 
@@ -77,6 +77,18 @@ export class Visual implements IVisual {
     private chipColorHelper: ColorHelper | null = null;
     private resolvedChipColorHex: string = "#130064";
 
+    // State for the Selected Chip TEXT Colour fx wiring (TEXT-02) — same
+    // global/measure-level shape as chipColorHelper above (this visual has
+    // no per-category selectionId concept). Governs the chip LABEL text
+    // only, never the selection fill/border chrome (T-14-05/T-07-02).
+    private chipTextColorHelper: ColorHelper | null = null;
+    private resolvedChipTextColorHex: string = "#ffffff";
+
+    // Custom in-iframe Title element (TITLE-01, shared _shared/formatting/
+    // v2 standard) — persistent div above the slicer row, hidden unless
+    // showTitle && titleText (render-nothing default, D-06).
+    private titleEl: HTMLElement;
+
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
         this.events = options.host.eventService;
@@ -91,6 +103,15 @@ export class Visual implements IVisual {
         this.target.style.flexDirection = "column";
         this.target.style.justifyContent = "center";
         this.target.style.height = "100%";
+
+        // Title element sits ABOVE the slicer row inside this.target's
+        // flex column. It is a child of this.target, so its right-clicks
+        // bubble to the existing target contextmenu listener below — no
+        // new context-menu dead zone.
+        this.titleEl = document.createElement("div");
+        this.titleEl.className = "osb-slicer-title";
+        this.titleEl.style.display = "none";
+        this.target.appendChild(this.titleEl);
 
         this.slicerRow = document.createElement("div");
         this.slicerRow.className = "osb-slicer-row";
@@ -155,6 +176,25 @@ export class Visual implements IVisual {
             );
             this.resolvedChipColorHex = this.chipColorHelper.getColorForMeasure(dv.metadata?.objects, "chipColor")
                 ?? chipFmt.chipColor.value.value;
+
+            // ─── fx wiring — Selected Chip Text Colour (TEXT-02) ────────
+            // Same global/measure-level pattern as chipColor above:
+            // dataViewWildcard selector, altConstantSelector undefined (no
+            // per-category selectionId concept exists in this visual),
+            // resolved once per update via dataView.metadata.objects.
+            // Applies to the chip LABEL text only — the selection-state
+            // fill/border chrome is untouched (T-14-05).
+            chipFmt.chipTextColor.selector = dataViewWildcard.createDataViewWildcardSelector(
+                dataViewWildcard.DataViewWildcardMatchingOption.InstancesAndTotals
+            );
+            chipFmt.chipTextColor.altConstantSelector = undefined;
+            this.chipTextColorHelper = new ColorHelper(
+                this.host.colorPalette,
+                { objectName: "slicerBar", propertyName: "chipTextColor" },
+                chipFmt.chipTextColor.value.value
+            );
+            this.resolvedChipTextColorHex = this.chipTextColorHelper.getColorForMeasure(dv.metadata?.objects, "chipTextColor")
+                ?? chipFmt.chipTextColor.value.value;
 
             const parsed = parseDataView(dv);
 
@@ -269,6 +309,26 @@ export class Visual implements IVisual {
         const maxSections = s.maxVisibleSections.value || 10;
         let sectionCount = 0;
 
+        // ─── Custom in-iframe Title (TITLE-01, shared v2 standard) ─────
+        // Render gate: showTitle && titleText (render-nothing default —
+        // showTitle defaults false so old saved reports are pixel-identical,
+        // D-06). textContent only — no HTML-string injection (cert + XSS).
+        const titleFmt = this.formattingSettings.titleSettings;
+        if (titleFmt?.showTitle?.value && titleFmt?.titleText?.value) {
+            this.titleEl.textContent = String(titleFmt.titleText.value);
+            this.titleEl.style.fontFamily = titleFmt.titleFontFamily?.value || "Segoe UI, sans-serif";
+            this.titleEl.style.fontSize = `${titleFmt.titleFontSize?.value ?? 14}px`;
+            this.titleEl.style.fontWeight = this.weightFor(titleFmt.titleBold?.value, "400");
+            this.titleEl.style.fontStyle = titleFmt.titleItalic?.value ? "italic" : "normal";
+            this.titleEl.style.textDecoration = titleFmt.titleUnderline?.value ? "underline" : "none";
+            this.titleEl.style.textAlign = textAlignFor(titleFmt.titleAlign?.value as string);
+            this.titleEl.style.color = hc ? fg : (titleFmt.titleColor?.value?.value || "#1a1a2e");
+            this.titleEl.style.padding = "4px 12px 2px";
+            this.titleEl.style.display = "";
+        } else {
+            this.titleEl.style.display = "none";
+        }
+
         while (this.slicerRow.firstChild) { this.slicerRow.removeChild(this.slicerRow.firstChild); }
         // Dedicated background layer (D-05): the pre-existing
         // slicerBarCard.backgroundColor picker already painted
@@ -304,6 +364,12 @@ export class Visual implements IVisual {
             label.textContent = section.name.toUpperCase() + ":";
             label.style.color = hc ? fg : s.labelColor.value.value;
             label.style.fontSize = s.labelFontSize.value + "px";
+            // Section label text treatment (TEXT-01) — bold-off falls back
+            // to the surface's own pre-existing hardcoded weight 600.
+            label.style.fontFamily = s.labelFontFamily?.value || "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
+            label.style.fontWeight = this.weightFor(s.labelBold?.value, "600");
+            label.style.fontStyle = s.labelItalic?.value ? "italic" : "normal";
+            label.style.textDecoration = s.labelUnderline?.value ? "underline" : "none";
             this.slicerRow.appendChild(label);
 
             if (!section.interactive) {
@@ -348,6 +414,10 @@ export class Visual implements IVisual {
             const chip = document.createElement("button");
             chip.className = "osb-period-chip";
             chip.textContent = item.label;
+            // Chip text treatment (TEXT-01) — bold-off falls back to the
+            // chip's own pre-existing hardcoded weight 500. Applies to
+            // text only; selection fill/border chrome below is untouched.
+            this.applyChipFont(chip, s, "500");
 
             if (sel.has(item.label)) {
                 chip.classList.add("selected");
@@ -356,10 +426,12 @@ export class Visual implements IVisual {
                 // through toRgba() with the sibling Selected Chip
                 // Transparency slider. Border stays fully opaque (chip
                 // outline) so the selection affordance stays legible at
-                // any transparency setting (T-07-02).
+                // any transparency setting (T-07-02). Text colour is the
+                // fx-resolved Selected Chip Text Colour (TEXT-02) — label
+                // text only, chrome untouched (T-14-05).
                 const chipTransparencyPct = s.chipTransparency.value ?? 0;
                 chip.style.background = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
-                chip.style.color = hc ? bg : s.chipTextColor.value.value;
+                chip.style.color = hc ? bg : this.resolvedChipTextColorHex;
                 chip.style.borderColor = hc ? fgSelected : this.resolvedChipColorHex;
             }
 
@@ -545,12 +617,17 @@ export class Visual implements IVisual {
             renderItems = renderItems.filter(i => i.label.toLowerCase().includes(lowerFilter));
         }
 
+        // Dropdown-panel item text treatment (TEXT-01) — same chip font
+        // composite; bold-off falls back to the item's own pre-existing
+        // hardcoded weight 600.
+        const s = this.formattingSettings.slicerBarCard;
         if (section.selectionMode === "single") {
             for (const item of renderItems) {
                 const el = document.createElement("div");
                 el.className = "osb-dropdown-item";
                 if (sel.has(item.label)) el.classList.add("selected");
                 el.textContent = item.label;
+                this.applyChipFont(el, s, "600");
                 el.addEventListener("mousemove", (e: MouseEvent) => {
                     this.tooltipService.show({
                         coordinates: [e.clientX, e.clientY],
@@ -573,6 +650,7 @@ export class Visual implements IVisual {
             for (const item of renderItems) {
                 const label = document.createElement("label");
                 label.className = "osb-dropdown-item osb-checkbox-item";
+                this.applyChipFont(label, s, "600");
 
                 const cb = document.createElement("input");
                 cb.type = "checkbox";
@@ -686,6 +764,10 @@ export class Visual implements IVisual {
         const trigger = document.createElement("button");
         trigger.className = "osb-dropdown-trigger";
         trigger.textContent = label;
+        // Trigger label text treatment (TEXT-01) — same chip font
+        // composite; bold-off falls back to the trigger's pre-existing
+        // default weight 400 (no hardcoded font-weight in CSS).
+        this.applyChipFont(trigger, this.formattingSettings.slicerBarCard, "400");
 
         trigger.addEventListener("click", (e: MouseEvent) => {
             e.stopPropagation();
@@ -830,7 +912,9 @@ export class Visual implements IVisual {
         const chipBg = hc ? fg : this.resolvedChipColorHex;
         const chipTransparencyPct = s.chipTransparency.value ?? 0;
         const chipFill = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
-        const chipText = hc ? bg : s.chipTextColor.value.value;
+        // fx-resolved Selected Chip Text Colour (TEXT-02) — label text
+        // only; selection fill/border chrome untouched (T-14-05).
+        const chipText = hc ? bg : this.resolvedChipTextColorHex;
         const borderClr = hc ? fg : s.borderColor.value.value;
         const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         const labelClr = hc ? fg : s.labelColor.value.value;
@@ -880,6 +964,29 @@ export class Visual implements IVisual {
                 }
             });
         });
+    }
+
+    /* ═══════════════════════════════════════
+     * TEXT TREATMENT HELPERS (TEXT-01, D-06)
+     * ═══════════════════════════════════════ */
+
+    /** weightFor(bold, restWeight) idiom — bold on renders "700"; bold off
+     *  falls back to the surface's own pre-existing hardcoded weight so old
+     *  saved reports render pixel-identical at the new property defaults. */
+    private weightFor(bold: boolean | undefined, restWeight: string): string {
+        return bold ? "700" : restWeight;
+    }
+
+    /** Apply the shared chip font composite (family/size/bold/italic/
+     *  underline) to a chip/trigger/dropdown-item text surface. Colour is
+     *  deliberately NOT set here — each call site keeps its own colour
+     *  logic (selection chrome, high contrast, fx). */
+    private applyChipFont(el: HTMLElement, s: any, restWeight: string): void {
+        el.style.fontFamily = s.chipFontFamily?.value || "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
+        el.style.fontSize = `${s.chipFontSize?.value ?? 11}px`;
+        el.style.fontWeight = this.weightFor(s.chipBold?.value, restWeight);
+        el.style.fontStyle = s.chipItalic?.value ? "italic" : "normal";
+        el.style.textDecoration = s.chipUnderline?.value ? "underline" : "none";
     }
 
     public destroy(): void {

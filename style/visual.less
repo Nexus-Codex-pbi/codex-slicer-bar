@@ -1,6 +1,19 @@
 /* Slicer Bar */
 @font-stack: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 
+/* Custom in-iframe Visual Title (TITLE-01, shared _shared/formatting/ v2).
+   Hidden by default (render-nothing default, D-06) — all font/colour/
+   alignment styling is applied inline at render from the shared card. */
+.osb-slicer-title {
+    font-family: @font-stack;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: 100%;
+}
+
 .osb-slicer-row {
     min-height: 25px;
     display: flex;

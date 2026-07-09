@@ -100,6 +100,32 @@
           },
           "displayName": "Label Font Size"
         },
+        "labelFontFamily": {
+          "type": {
+            "formatting": {
+              "fontFamily": true
+            }
+          },
+          "displayName": "Label Font Family"
+        },
+        "labelBold": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Label Bold"
+        },
+        "labelItalic": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Label Italic"
+        },
+        "labelUnderline": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Label Underline"
+        },
         "chipColor": {
           "type": {
             "fill": {
@@ -125,6 +151,40 @@
             }
           },
           "displayName": "Chip Text Color"
+        },
+        "chipFontFamily": {
+          "type": {
+            "formatting": {
+              "fontFamily": true
+            }
+          },
+          "displayName": "Chip Font Family"
+        },
+        "chipFontSize": {
+          "type": {
+            "formatting": {
+              "fontSize": true
+            }
+          },
+          "displayName": "Chip Font Size"
+        },
+        "chipBold": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Chip Bold"
+        },
+        "chipItalic": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Chip Italic"
+        },
+        "chipUnderline": {
+          "type": {
+            "bool": true
+          },
+          "displayName": "Chip Underline"
         },
         "defaultDisplayMode": {
           "type": {
@@ -264,6 +324,75 @@
           "displayName": "Transparency",
           "type": {
             "numeric": true
+          }
+        }
+      }
+    },
+    "titleSettings": {
+      "displayName": "Visual Title",
+      "properties": {
+        "showTitle": {
+          "displayName": "Show Title",
+          "type": {
+            "bool": true
+          }
+        },
+        "titleText": {
+          "displayName": "Title Text",
+          "type": {
+            "text": true
+          }
+        },
+        "titleFontFamily": {
+          "displayName": "Font Family",
+          "type": {
+            "formatting": {
+              "fontFamily": true
+            }
+          }
+        },
+        "titleFontSize": {
+          "displayName": "Font Size",
+          "type": {
+            "formatting": {
+              "fontSize": true
+            }
+          }
+        },
+        "titleBold": {
+          "displayName": "Bold",
+          "type": {
+            "bool": true
+          }
+        },
+        "titleItalic": {
+          "displayName": "Italic",
+          "type": {
+            "bool": true
+          }
+        },
+        "titleUnderline": {
+          "displayName": "Underline",
+          "type": {
+            "bool": true
+          }
+        },
+        "titleAlign": {
+          "displayName": "Alignment",
+          "type": {
+            "formatting": {
+              "alignment": true
+            }
+          }
+        },
+        "titleColor": {
+          "displayName": "Font Color",
+          "type": {
+            "fill": {
+              "solid": {
+                "color": true
+              }
+            }
           }
         }
       }

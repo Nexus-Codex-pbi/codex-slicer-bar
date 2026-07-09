@@ -8,8 +8,19 @@ import FormattingSettingsSlice = formattingSettings.Slice;
 import FormattingSettingsModel = formattingSettings.Model;
 
 import { BackgroundSettings } from "../../_shared/formatting/backgroundSettings";
+import { TitleSettings } from "../../_shared/formatting/titleSettings";
+import { textAlignFor, makeFontControl } from "../../_shared/formatting/textFormatting";
+
+// TitleSettings + alignment helpers live in _shared/formatting/ (D-13,
+// D-14 — frozen v2 standard from Plan 10). Re-exported so visual.ts can
+// import them from "./settings" (stable import path, mirrors pbiKpiCard).
+export { TitleSettings, textAlignFor };
 
 const ConstantOrRule = powerbi.VisualEnumerationInstanceKinds.ConstantOrRule;
+
+// Matches the pre-existing @font-stack in style/visual.less so the new
+// font-family defaults render pixel-identical on old saved reports (D-06).
+const FONT_STACK = "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
 
 export class SlicerBarSettings extends FormattingSettingsCard {
     name = "slicerBar";
@@ -33,11 +44,24 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         value: { value: "#5e5d5a" },
         instanceKind: ConstantOrRule
     });
-    labelFontSize = new formattingSettings.NumUpDown({
-        name: "labelFontSize",
-        displayName: "Label font size",
-        value: 11,
-    });
+    // Section label text (TEXT-01) — FontControl composite via the shared
+    // makeFontControl helper. The bundle's fontSize slice is named
+    // "labelFontSize", deliberately matching the PRE-EXISTING capability
+    // property (D-06/D-07: additive-only, no schema rename) so old saved
+    // font-size values load into the composite unchanged; family/bold/
+    // italic/underline are NEW sibling properties. Bold defaults true —
+    // .osb-slicer-label carries a pre-existing hardcoded font-weight:600
+    // (semibold-or-bolder maps to Bold-default-true per the suite's
+    // weightFor idiom; bold-off falls back to the surface's own 600).
+    // Alignment omitted — the bar is a flex row, label position is
+    // layout-determined (matches 01-11/01-12/01-13 precedent).
+    private labelFontBundle = makeFontControl("label", { fontFamily: FONT_STACK, fontSize: 11, bold: true });
+    labelFontFamily = this.labelFontBundle.fontFamily;
+    labelFontSize = this.labelFontBundle.fontSize;
+    labelBold = this.labelFontBundle.bold;
+    labelItalic = this.labelFontBundle.italic;
+    labelUnderline = this.labelFontBundle.underline;
+    labelFont = this.labelFontBundle.control;
     chipColor = new formattingSettings.ColorPicker({
         name: "chipColor",
         displayName: "Selected chip",
@@ -67,6 +91,23 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         value: { value: "#ffffff" },
         instanceKind: ConstantOrRule
     });
+    // Chip/item/trigger text (TEXT-01) — all-new FontControl composite
+    // (distinct "chip" prefix, every property NEW/additive) governing the
+    // chip buttons, dropdown triggers and dropdown-panel items. Bold
+    // defaults false — the dominant surface (.osb-period-chip) carries a
+    // pre-existing hardcoded font-weight:500 (below the semibold
+    // threshold); bold-off renders each surface's OWN pre-existing weight
+    // (chip 500, trigger 400, dropdown item 600) via the weightFor idiom
+    // so old saved reports render pixel-identical (D-06). Font size
+    // defaults to the pre-existing 11px CSS on all three surfaces.
+    // Alignment omitted — flex-row layout-determined.
+    private chipFontBundle = makeFontControl("chip", { fontFamily: FONT_STACK, fontSize: 11 });
+    chipFontFamily = this.chipFontBundle.fontFamily;
+    chipFontSize = this.chipFontBundle.fontSize;
+    chipBold = this.chipFontBundle.bold;
+    chipItalic = this.chipFontBundle.italic;
+    chipUnderline = this.chipFontBundle.underline;
+    chipFont = this.chipFontBundle.control;
     defaultDisplayMode = new formattingSettings.ItemDropdown({
         name: "defaultDisplayMode",
         displayName: "Default display mode",
@@ -113,10 +154,11 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         this.backgroundColor,
         this.borderColor,
         this.labelColor,
-        this.labelFontSize,
+        this.labelFont,
         this.chipColor,
         this.chipTransparency,
         this.chipTextColor,
+        this.chipFont,
         this.defaultDisplayMode,
         this.defaultSelectionMode,
         this.maxVisibleChips,
@@ -126,6 +168,7 @@ export class SlicerBarSettings extends FormattingSettingsCard {
 }
 
 export class VisualFormattingSettingsModel extends FormattingSettingsModel {
+    titleSettings = new TitleSettings();
     slicerBarCard = new SlicerBarSettings();
     background = new BackgroundSettings();
 
@@ -139,5 +182,5 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     // more common "never painted" case. The shared Background card's own
     // raw default (opaque white, transparency 0) is pixel-identical.
 
-    cards = [this.slicerBarCard, this.background];
+    cards = [this.titleSettings, this.slicerBarCard, this.background];
 }
