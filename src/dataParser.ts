@@ -135,11 +135,20 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         //   1. Bridge-table mode: explicit "Table.Column" string in the Value
         //      data column. Required for multi-section composite slicers
         //      where one bridge feeds N different filter targets.
-        //   2. Simple mode: no Value role bound at all. Derive filterTarget
-        //      from the bound Label column's source.queryName. This is what
+        //   2. Simple mode: fallback to the bound Label column's
+        //      source.queryName whenever the Value field doesn't resolve to
+        //      a "Table.Column" string. This covers BOTH (a) no Value role
+        //      bound at all, and (b) a Value role bound but populated with
+        //      something other than the "Table.Column" convention (e.g. a
+        //      reviewer/user drags the same category field into the Value
+        //      well expecting it to "just filter"). Case (b) previously fell
+        //      through to `filterTarget = null` (non-interactive, static
+        //      section) — a silent filter-out failure. This is what
         //      AppSource cert reviewers hit by default — drop a column in,
         //      expect outward filtering. Without this, policy 1180.2.2.3
-        //      Filter Out soft-fails.
+        //      Filter Out soft-fails. queryName is derived from the field's
+        //      source column, not its (possibly renamed) display name, so
+        //      this also holds for fields the report author has renamed.
         let filterTarget: { table: string; column: string } | null = null;
         const firstValue = firstRow.value || "";
         if (firstValue.includes(".")) {
@@ -148,7 +157,7 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
                 table: firstValue.substring(0, dotIdx),
                 column: firstValue.substring(dotIdx + 1),
             };
-        } else if (valueIdx === undefined && labelIdx !== undefined) {
+        } else if (labelIdx !== undefined) {
             const qn = (categories[labelIdx].source as { queryName?: string }).queryName || "";
             const dotIdx = qn.lastIndexOf(".");
             if (dotIdx > 0) {
