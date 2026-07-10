@@ -21,9 +21,22 @@ import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
 import { toRgba } from "../../_shared/formatting/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
+import { Theme, accentToken, bandColor } from "../../_shared/formatting/bandEngine";
+import { surfaceTokens, TABULAR_NUMS } from "../../_shared/formatting/designTokens";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
+
+/** Luminance-based theme pick (same 0.55 threshold convention as the
+ * pbiKpiCard v3 pilot, Plan 15) — decides whether the resolved background
+ * reads as a "dark" or "light" surface. */
+function themeFor(hex: string): Theme {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})/i.exec(hex || "");
+    if (!m) return "dark";
+    const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.55 ? "light" : "dark";
+}
 
 interface BasicFilter extends IFilter {
     $schema: string;
@@ -344,6 +357,17 @@ export class Visual implements IVisual {
         this.slicerRow.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         this.slicerRow.style.width = viewportWidth + "px";
 
+        // v3 theme pick (LOOK-05) — drives the CSS-only cyan hover ring and
+        // the magenta clear-all hover via custom properties (visual.less);
+        // per-instance "selected" chip colour is still resolved through the
+        // existing fx-wired pickers below (D-16).
+        const theme: Theme = themeFor(outerBgHex);
+        const surf = surfaceTokens(theme);
+        const accentHex = accentToken(theme);
+        const dangerHex = bandColor("danger", theme);
+        this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentHex);
+        this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
+
         // Right-justify the bar when fan direction is left
         const dir = String(s.fanDirection.value.value || "auto");
         this.slicerRow.style.justifyContent = dir === "left" ? "flex-end" : "";
@@ -372,6 +396,21 @@ export class Visual implements IVisual {
             label.style.textDecoration = s.labelUnderline?.value ? "underline" : "none";
             this.slicerRow.appendChild(label);
 
+            // v2 mono count badge (LOOK-05, §1 micro/count token) — one per
+            // interactive filter group, dims at zero. Derived entirely from
+            // this.selections (no new format-pane property).
+            if (section.interactive) {
+                const groupSel = this.selections.get(section.name) || new Set<string>();
+                const countBadge = document.createElement("span");
+                countBadge.className = "osb-chip-count";
+                countBadge.textContent = String(groupSel.size);
+                countBadge.style.fontFeatureSettings = TABULAR_NUMS;
+                countBadge.style.color = hc ? fg : (groupSel.size > 0 ? accentHex : surf.muted);
+                countBadge.style.borderColor = hc ? fg : surf.border;
+                countBadge.style.opacity = groupSel.size > 0 ? "1" : "0.35";
+                this.slicerRow.appendChild(countBadge);
+            }
+
             if (!section.interactive) {
                 this.renderStaticSection(section, s);
             } else if (section.displayMode === "dropdown") {
@@ -379,6 +418,41 @@ export class Visual implements IVisual {
             } else {
                 this.renderChipsSection(section, s);
             }
+        }
+
+        // v2 suite-level Clear All + total-active count (LOOK-05) — right-
+        // justified via CSS margin-left:auto, only when at least one
+        // section rendered. Clears every section's own selection state and
+        // re-runs the SAME filter pipeline a single chip click already
+        // uses (via the existing per-section helper below), then re-renders.
+        if (sectionCount > 0) {
+            let totalActive = 0;
+            for (const section of this.sections) {
+                totalActive += (this.selections.get(section.name)?.size || 0);
+            }
+
+            const clearAllBtn = document.createElement("button");
+            clearAllBtn.className = "osb-clear-all";
+            clearAllBtn.textContent = "✕ " + this.localizationManager.getDisplayName("Clear_All");
+            clearAllBtn.style.color = hc ? fg : surf.muted;
+            clearAllBtn.addEventListener("click", (e: MouseEvent) => {
+                e.stopPropagation();
+                for (const clearSection of this.sections) {
+                    this.selections.set(clearSection.name, new Set());
+                }
+                if (this.sections.length > 0) {
+                    this.applySectionFilter(this.sections[0]);
+                }
+                this.renderSlicerBar(this.target.clientWidth);
+            });
+            this.slicerRow.appendChild(clearAllBtn);
+
+            const totalEl = document.createElement("span");
+            totalEl.className = "osb-total-active";
+            totalEl.textContent = `${totalActive} active`;
+            totalEl.style.fontFeatureSettings = TABULAR_NUMS;
+            totalEl.style.color = hc ? fg : surf.muted;
+            this.slicerRow.appendChild(totalEl);
         }
     }
 
@@ -421,18 +495,34 @@ export class Visual implements IVisual {
 
             if (sel.has(item.label)) {
                 chip.classList.add("selected");
-                // Per-region transparency (D-05) + fx (TRANS-04): resolved
-                // colour (rule-evaluated if set, else static swatch) fed
-                // through toRgba() with the sibling Selected Chip
-                // Transparency slider. Border stays fully opaque (chip
-                // outline) so the selection affordance stays legible at
-                // any transparency setting (T-07-02). Text colour is the
-                // fx-resolved Selected Chip Text Colour (TEXT-02) — label
-                // text only, chrome untouched (T-14-05).
-                const chipTransparencyPct = s.chipTransparency.value ?? 0;
-                chip.style.background = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
-                chip.style.color = hc ? bg : this.resolvedChipTextColorHex;
-                chip.style.borderColor = hc ? fgSelected : this.resolvedChipColorHex;
+                if (hc) {
+                    // HC keeps the pre-existing solid-fill inversion (fg
+                    // fill / bg text) — a stronger, more reliable
+                    // accessible state indicator than a subtle outline +
+                    // glow, and matches the suite's "drop all glow" HC
+                    // rule (§8).
+                    chip.style.background = fgSelected;
+                    chip.style.color = bg;
+                    chip.style.borderColor = fgSelected;
+                    chip.style.boxShadow = "none";
+                } else {
+                    // v2 "selected" ring (LOOK-05, §4 brand focus
+                    // treatment): cyan-by-default border + text + a small
+                    // glow, no solid fill (replaces the old filled pill).
+                    // Selected Chip Colour/Text still resolve via the
+                    // existing fx pipeline (D-16) — their DECLARED
+                    // DEFAULTS move to the brand cyan token (settings.ts)
+                    // so an untouched report renders the v2 ring. Selected
+                    // Chip Transparency now modulates the glow's colour-mix
+                    // intensity — the fill it used to control no longer
+                    // exists under the outline treatment.
+                    const chipTransparencyPct = s.chipTransparency.value ?? 0;
+                    const glowPct = Math.max(0, 100 - chipTransparencyPct);
+                    chip.style.background = "transparent";
+                    chip.style.color = this.resolvedChipTextColorHex;
+                    chip.style.borderColor = this.resolvedChipColorHex;
+                    chip.style.boxShadow = `0 0 8px color-mix(in srgb, ${this.resolvedChipColorHex} ${glowPct}%, transparent)`;
+                }
             }
 
             chip.addEventListener("mousemove", (e: MouseEvent) => {

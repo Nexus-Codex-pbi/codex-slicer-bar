@@ -62,10 +62,17 @@ export class SlicerBarSettings extends FormattingSettingsCard {
     labelItalic = this.labelFontBundle.italic;
     labelUnderline = this.labelFontBundle.underline;
     labelFont = this.labelFontBundle.control;
+    // v2 default flip (LOOK-05, D-16): the declared default moves from the
+    // old filled-pill purple (#130064) to the brand cyan accent token
+    // (dark-theme reference value, matches the suite's other static-hex
+    // picker defaults) — under v2 this colour now drives the SELECTED
+    // chip's border + glow (no solid fill), so an untouched report renders
+    // the suite-wide cyan "selected" ring. A user who overrides this
+    // picker still gets their own colour as the ring/glow tint (D-16).
     chipColor = new formattingSettings.ColorPicker({
         name: "chipColor",
         displayName: "Selected chip",
-        value: { value: "#130064" },
+        value: { value: "#00d9ff" },
         instanceKind: ConstantOrRule
     });
     // Per-region transparency (D-05) sibling to the existing Selected chip
@@ -85,10 +92,15 @@ export class SlicerBarSettings extends FormattingSettingsCard {
             maxValue: { type: powerbi.visuals.ValidatorType.Max, value: 100 }
         }
     });
+    // v2 default flip (LOOK-05, D-16): declared default moves from white
+    // (the old on-fill text colour) to the same brand cyan accent token as
+    // chipColor above — under v2 the selected chip has no fill, so its
+    // text now matches the ring colour by default; still independently
+    // overridable (D-16).
     chipTextColor = new formattingSettings.ColorPicker({
         name: "chipTextColor",
         displayName: "Selected chip text",
-        value: { value: "#ffffff" },
+        value: { value: "#00d9ff" },
         instanceKind: ConstantOrRule
     });
     // Chip/item/trigger text (TEXT-01) — all-new FontControl composite

@@ -134,3 +134,19 @@ NOT touch the Value well.
 - [ ] applyAllFilters()/readAppliedFilters()/parseDataView() byte-unchanged from before this plan (git diff confirms)
 - [ ] Chip click still cross-filters other visuals; clearing restores full data
 - [ ] Filter Out (queryName fallback, 381a17e) still functions on a plain column field bound to Value
+
+## Pill Chips + Cyan Active State (LOOK-05)
+- [ ] Chips render as full pill shapes (border-radius 999)
+- [ ] Unselected chip hover shows the suite's cyan accent on border + text (theme/HC aware), replacing the old hardcoded purple
+- [ ] Selected chip (non-HC) shows a 1px cyan border + text + small glow — no solid fill (replaces the old filled-pill look)
+- [ ] Selected Chip Colour / Selected chip text still resolve — an untouched report renders the new brand-cyan defaults; a custom colour override still applies to the ring/text
+- [ ] Selected Chip Transparency now modulates the selection glow's intensity (0 = full glow, 100 = no glow) since the fill it used to control no longer exists
+- [ ] High contrast: selected chip keeps the pre-existing solid-fill inversion (system foreground fill / background text), no glow
+
+## Mono Count Badges + Suite-Level Clear All (LOOK-05)
+- [ ] Each interactive filter group shows a monospace count badge next to its label, reflecting the number of active selections in that group
+- [ ] Count badge dims to ~35% opacity at zero selections; full opacity + brand-cyan colour once >0
+- [ ] A single "Clear all" affordance appears at the right edge of the bar alongside a total-active count, whenever at least one section is rendered
+- [ ] Clear all resets every section's selection state and re-applies filters via the existing filter pipeline (same call path a chip click already uses) — no new filter mechanism introduced
+- [ ] Clear all text stays neutral at rest and only warms toward magenta on hover (danger colour never resting)
+- [ ] High contrast: count badge and clear all use system foreground colour, no hue-only signal
