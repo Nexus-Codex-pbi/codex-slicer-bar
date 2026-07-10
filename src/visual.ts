@@ -19,10 +19,10 @@ import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
-import { toRgba } from "../../_shared/formatting/colorHelpers";
+import { toRgba } from "./shared/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
-import { Theme, accentToken, bandColor } from "../../_shared/formatting/bandEngine";
-import { surfaceTokens, TABULAR_NUMS } from "../../_shared/formatting/designTokens";
+import { Theme, accentToken, bandColor } from "./shared/bandEngine";
+import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
