@@ -78,15 +78,26 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
     const selectionModeIdx = roleToCatIdx["selectionMode"];
     const sortIdx = roleToCatIdx["sortOrder"];
 
-    if (catIdx === undefined || labelIdx === undefined) return [];
+    // Single-field simple mode (Neil live-QA 2026-07-16): when only ONE of
+    // Category/Label is bound, that column supplies the item labels and the
+    // visual renders a single section named after the column. Previously BOTH
+    // were hard-required and the visual silently rendered nothing — which is
+    // also the default cert-reviewer experience, since dragging one field onto
+    // the visual lands it in Category (the first well). Bridge mode (both
+    // bound) is unchanged.
+    const effLabelIdx = labelIdx !== undefined ? labelIdx : catIdx;
+    if (effLabelIdx === undefined) return [];
+    const singleSectionName: string | null = (catIdx === undefined || labelIdx === undefined)
+        ? (categories[effLabelIdx].source.displayName || "Filter")
+        : null;
 
     const rowCount = categories[0]?.values?.length ?? 0;
 
     const rows: BridgeRow[] = [];
     for (let r = 0; r < rowCount; r++) {
         rows.push({
-            category: String(categories[catIdx].values[r] || ""),
-            label: String(categories[labelIdx].values[r] || ""),
+            category: singleSectionName ?? String(categories[catIdx].values[r] || ""),
+            label: String(categories[effLabelIdx].values[r] || ""),
             value: valueIdx !== undefined ? String(categories[valueIdx].values[r] || "") : "",
             shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] || "") : "",
             defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] || "") : "",
@@ -157,8 +168,10 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
                 table: firstValue.substring(0, dotIdx),
                 column: firstValue.substring(dotIdx + 1),
             };
-        } else if (labelIdx !== undefined) {
-            const qn = (categories[labelIdx].source as { queryName?: string }).queryName || "";
+        } else {
+            // effLabelIdx: in single-field mode the bound column (whichever
+            // well it landed in) is the filter target source.
+            const qn = (categories[effLabelIdx].source as { queryName?: string }).queryName || "";
             const dotIdx = qn.lastIndexOf(".");
             if (dotIdx > 0) {
                 filterTarget = {

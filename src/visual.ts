@@ -23,6 +23,9 @@ import { toRgba } from "./shared/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
+import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
+import { applyCardSignature } from "./shared/cardSignatureSettings";
+import { applyBorder } from "./shared/borderSettings";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
@@ -101,6 +104,16 @@ export class Visual implements IVisual {
     // v2 standard) — persistent div above the slicer row, hidden unless
     // showTitle && titleText (render-nothing default, D-06).
     private titleEl: HTMLElement;
+    // Corner-bracket card signature (suite kit) — accent-tinted overlay on the
+    // full-tile root, painted above the bar. pointer-events:none.
+    private cornerSignature: CardSignatureHandle | null = null;
+    // Theme resolved from the shared Background card each render — chip and
+    // dropdown renderers key surface tokens + glow strength off it.
+    private resolvedTheme: Theme = "light";
+    // Per-section survivor sets when an EXTERNAL cross-filter has narrowed the
+    // incoming dataView (section name → labels still present). Empty map when
+    // no external filter is active. Drives the neon-lite/ghost chip states.
+    private externalAvail: Map<string, Set<string>> = new Map();
 
     constructor(options: VisualConstructorOptions) {
         this.host = options.host;
@@ -116,6 +129,11 @@ export class Visual implements IVisual {
         this.target.style.flexDirection = "column";
         this.target.style.justifyContent = "center";
         this.target.style.height = "100%";
+        // Root carries the suite chrome (fill-tile background, Border card,
+        // corner accents): keep the border inside the tile and anchor the
+        // absolutely-positioned corner overlay.
+        this.target.style.boxSizing = "border-box";
+        this.target.style.position = "relative";
 
         // Title element sits ABOVE the slicer row inside this.target's
         // flex column. It is a child of this.target, so its right-clicks
@@ -129,6 +147,15 @@ export class Visual implements IVisual {
         this.slicerRow = document.createElement("div");
         this.slicerRow.className = "osb-slicer-row";
         this.target.appendChild(this.slicerRow);
+
+        // Corner-bracket card signature (suite kit) — appended last so it
+        // overlays the bar; accent-tinted, refreshed per render via
+        // applyCardSignature.
+        this.cornerSignature = makeCornerBrackets(
+            this.target,
+            accentToken("dark"),
+            { variant: "cornerBracket", mirror: true }
+        );
 
         // Close dropdown on outside click (store reference for destroy cleanup)
         this.documentClickHandler = (e: MouseEvent) => {
@@ -229,17 +256,47 @@ export class Visual implements IVisual {
                     nextCache.push(ps);
                 }
             }
+            // Preserve cached sections that VANISHED from this update entirely —
+            // an external cross-filter can eliminate every row of a section
+            // (single-field mode, or sparse bridge data), and dropping them
+            // from the cache here is what made them blink out of the display
+            // instead of ghosting (Neil live-QA 2026-07-16). An empty parsed
+            // set is treated as a reset (unbound field / cleared data), not a
+            // filter.
+            if (parsed.length > 0 && this.cachedSections) {
+                for (const c of this.cachedSections) {
+                    if (!parsedByName.has(c.name)) nextCache.push(c);
+                }
+                nextCache.sort((a, b) => a.sectionSort - b.sectionSort);
+            }
             this.cachedSections = nextCache;
 
             // For display: sections that THIS visual has actively filtered keep
-            // the full cached items (so the user can still pick other values);
-            // sections without our own selection use the parsed items, which
-            // reflect any external filter-in from other visuals.
-            this.sections = parsed.map(ps => {
-                const ownSel = this.selections.get(ps.name);
+            // the full cached items (so the user can still pick other values).
+            // Sections WITHOUT our own selection that arrive narrowed relative
+            // to the fullest set we've seen = an EXTERNAL cross-filter from
+            // another visual — keep the FULL list on screen and record which
+            // labels survive; the chip render neon-lights the survivors and
+            // ghosts the rest (Neil live-QA 2026-07-16: chips must not vanish,
+            // they highlight). Own-selection sections skip the survivor diff —
+            // a shrunk dataView there is (or may be) our own filter reflected
+            // back, not attributable to an external visual.
+            this.externalAvail.clear();
+            this.sections = nextCache.map(c => {
+                const ps = parsedByName.get(c.name);
+                const ownSel = this.selections.get(c.name);
                 if (ownSel && ownSel.size > 0) {
-                    const cached = nextCache.find(c => c.name === ps.name);
-                    if (cached) return cached;
+                    return c;
+                }
+                if (!ps) {
+                    // Whole section eliminated by an external cross-filter:
+                    // render it from cache with EVERY item ghosted.
+                    this.externalAvail.set(c.name, new Set());
+                    return c;
+                }
+                if (c.items.length > ps.items.length) {
+                    this.externalAvail.set(c.name, new Set(ps.items.map(i => i.label)));
+                    return c;
                 }
                 return ps;
             });
@@ -327,14 +384,20 @@ export class Visual implements IVisual {
         // showTitle defaults false so old saved reports are pixel-identical,
         // D-06). textContent only — no HTML-string injection (cert + XSS).
         const titleFmt = this.formattingSettings.titleSettings;
-        if (titleFmt?.showTitle?.value && titleFmt?.titleText?.value) {
+        const titleInline = !!s.titleInline?.value;
+        const showTitle = !!(titleFmt?.showTitle?.value && titleFmt?.titleText?.value);
+
+        // Clear the bar row FIRST — an inline title lives INSIDE it and is
+        // re-appended below (before the sections).
+        while (this.slicerRow.firstChild) { this.slicerRow.removeChild(this.slicerRow.firstChild); }
+
+        if (showTitle) {
             this.titleEl.textContent = String(titleFmt.titleText.value);
             this.titleEl.style.fontFamily = titleFmt.titleFontFamily?.value || "Segoe UI, sans-serif";
             this.titleEl.style.fontSize = `${titleFmt.titleFontSize?.value ?? 14}px`;
             this.titleEl.style.fontWeight = this.weightFor(titleFmt.titleBold?.value, "400");
             this.titleEl.style.fontStyle = titleFmt.titleItalic?.value ? "italic" : "normal";
             this.titleEl.style.textDecoration = titleFmt.titleUnderline?.value ? "underline" : "none";
-            this.titleEl.style.textAlign = textAlignFor(titleFmt.titleAlign?.value as string);
             // Adaptive default (D-16 sentinel): untouched shared-Title navy
             // swaps to the dark text token on dark surfaces (theme keyed off
             // the shared Background card, same source as the v3 theme pick below).
@@ -343,25 +406,46 @@ export class Visual implements IVisual {
                 && themeFor(this.formattingSettings.background.backgroundColor.value?.value ?? "#ffffff") === "dark"
                 ? surfaceTokens("dark").text : setTitle;
             this.titleEl.style.color = hc ? fg : adaptiveTitle;
-            this.titleEl.style.padding = "4px 12px 2px";
             this.titleEl.style.display = "";
+            if (titleInline) {
+                // Inline ("Title inline with bar"): first item INSIDE the row,
+                // vertically centred with the chips, then a pipe divider like
+                // the sections. width:auto overrides the .osb-slicer-title
+                // width:100% (which otherwise consumes the whole row and pushes
+                // the chips off-screen). Alignment is layout-determined here.
+                this.titleEl.style.textAlign = "left";
+                this.titleEl.style.padding = "0 4px 0 0";
+                this.titleEl.style.width = "auto";
+                this.titleEl.style.alignSelf = "center";
+                this.titleEl.style.whiteSpace = "nowrap";
+                this.slicerRow.appendChild(this.titleEl);
+                const titleSep = document.createElement("span");
+                titleSep.className = "osb-slicer-sep";
+                this.slicerRow.appendChild(titleSep);
+            } else {
+                // Above (default): its own row above the bar.
+                this.titleEl.style.textAlign = textAlignFor(titleFmt.titleAlign?.value as string);
+                this.titleEl.style.padding = "4px 12px 2px";
+                this.titleEl.style.width = "";
+                this.titleEl.style.alignSelf = "";
+                this.titleEl.style.whiteSpace = "";
+                if (this.titleEl.parentElement !== this.target) {
+                    this.target.insertBefore(this.titleEl, this.slicerRow);
+                }
+            }
         } else {
             this.titleEl.style.display = "none";
         }
 
-        while (this.slicerRow.firstChild) { this.slicerRow.removeChild(this.slicerRow.firstChild); }
-        // Dedicated background layer (D-05): the pre-existing
-        // slicerBarCard.backgroundColor picker already painted
-        // this.slicerRow unconditionally on every render (opaque #ffffff
-        // default), matching the shared Background card's own raw default
-        // — no transparency-default override needed (D-06). Swapped for
-        // the shared Background card's toRgba() read, same swap pattern
-        // the pilot established for pbiKpiCard's cardStyle.backgroundColor
-        // (old backgroundColor capability stays declared, no longer read).
+        // Fill-tile background (D-05): the bar band was painted before, leaving
+        // the host tile visible above/below the bar = "multiple backgrounds".
+        // Paint the full-height ROOT instead and keep the bar row transparent,
+        // so a single background fills the tile.
         const background = this.formattingSettings.background;
         const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
         const outerBgTransparencyPct = background.transparency.value ?? 0;
-        this.slicerRow.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
+        this.target.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
+        this.slicerRow.style.background = "transparent";
         this.slicerRow.style.width = viewportWidth + "px";
 
         // v3 theme pick (LOOK-05) — drives the CSS-only cyan hover ring and
@@ -369,11 +453,32 @@ export class Visual implements IVisual {
         // per-instance "selected" chip colour is still resolved through the
         // existing fx-wired pickers below (D-16).
         const theme: Theme = themeFor(outerBgHex);
+        this.resolvedTheme = theme;
         const surf = surfaceTokens(theme);
         const accentHex = accentToken(theme);
         const dangerHex = bandColor("danger", theme);
         this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
+
+        // ─── Suite chrome: Border card + Corner Accents on the full-tile root.
+        // (The shared modules were vendored earlier as "source only — rebuild
+        // at this visual's sample-QA turn"; this is that wiring.) Border is CSS
+        // on the root; the corner signature overlay is refreshed to the theme
+        // accent. Both frame the whole tile (which the background now fills).
+        applyBorder(this.target, this.formattingSettings.visualBorder, {
+            hcActive: hc,
+            hcColor: fg,
+            palette: this.colorPalette,
+            metadataObjects: undefined,
+        });
+        applyCardSignature(this.cornerSignature, this.formattingSettings.cardSignature, {
+            autoHex: accentHex,
+            hcActive: hc,
+            hcColor: fg,
+            mirror: true,
+            glowMix: hc ? 0 : (theme === "dark" ? 55 : 0),
+            muted: false,
+        });
 
         // Right-justify the bar when fan direction is left
         const dir = String(s.fanDirection.value.value || "auto");
@@ -513,22 +618,50 @@ export class Visual implements IVisual {
                     chip.style.borderColor = fgSelected;
                     chip.style.boxShadow = "none";
                 } else {
-                    // v2 "selected" ring (LOOK-05, §4 brand focus
-                    // treatment): cyan-by-default border + text + a small
-                    // glow, no solid fill (replaces the old filled pill).
-                    // Selected Chip Colour/Text still resolve via the
-                    // existing fx pipeline (D-16) — their DECLARED
-                    // DEFAULTS move to the brand cyan token (settings.ts)
-                    // so an untouched report renders the v2 ring. Selected
-                    // Chip Transparency now modulates the glow's colour-mix
-                    // intensity — the fill it used to control no longer
-                    // exists under the outline treatment.
+                    // v2 "selected" ring, NEON edition (Neil live-QA
+                    // 2026-07-16: the single 8px glow read flat): layered
+                    // outer glow + tight halo + inset tube-light + text
+                    // glow + weight 700 (the board's .schip.on bump), plus
+                    // a faint accent fill tint for presence. Still no solid
+                    // fill. Selected Chip Colour/Text resolve via the fx
+                    // pipeline (D-16); Selected Chip Transparency modulates
+                    // the whole glow stack's colour-mix intensity. Light
+                    // theme runs the stack at reduced strength (board's
+                    // --glowmix drop on the light canvas — full neon on a
+                    // pale surface reads as smudge, not glow).
                     const chipTransparencyPct = s.chipTransparency.value ?? 0;
-                    const glowPct = Math.max(0, 100 - chipTransparencyPct);
-                    chip.style.background = "transparent";
+                    const glowPct = Math.max(0, 100 - chipTransparencyPct)
+                        * (this.resolvedTheme === "dark" ? 1 : 0.55);
+                    const mix = (pct: number) =>
+                        `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
+                    chip.style.background = mix(glowPct * 0.12);
                     chip.style.color = this.resolvedChipTextColorHex;
                     chip.style.borderColor = this.resolvedChipColorHex;
-                    chip.style.boxShadow = `0 0 8px color-mix(in srgb, ${this.resolvedChipColorHex} ${glowPct}%, transparent)`;
+                    chip.style.boxShadow =
+                        `0 0 14px ${mix(glowPct)}, ` +
+                        `0 0 4px ${mix(glowPct)}, ` +
+                        `inset 0 0 8px ${mix(glowPct * 0.35)}`;
+                    chip.style.textShadow = `0 0 8px ${mix(glowPct * 0.8)}`;
+                    chip.style.fontWeight = "700";
+                }
+            } else {
+                // Unselected chip under an active EXTERNAL cross-filter
+                // (another visual narrowed this section): survivors get a
+                // neon-lite ring (~40% of the selected glow), filtered-out
+                // values ghost to 35% (board's count-badge dim idiom) but
+                // stay clickable. Skipped in HC (no-glow rule §8; dimming
+                // would hurt contrast) and when no external filter is live.
+                const avail = this.externalAvail.get(section.name);
+                if (avail && !hc) {
+                    if (avail.has(item.label)) {
+                        const litePct = 40 * (this.resolvedTheme === "dark" ? 1 : 0.55);
+                        const liteMix = `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(litePct)}%, transparent)`;
+                        chip.style.borderColor = this.resolvedChipColorHex;
+                        chip.style.color = this.resolvedChipTextColorHex;
+                        chip.style.boxShadow = `0 0 8px ${liteMix}`;
+                    } else {
+                        chip.style.opacity = "0.35";
+                    }
                 }
             }
 
@@ -1012,7 +1145,11 @@ export class Visual implements IVisual {
         // fx-resolved Selected Chip Text Colour (TEXT-02) — label text
         // only; selection fill/border chrome untouched (T-14-05).
         const chipText = hc ? bg : this.resolvedChipTextColorHex;
-        const borderClr = hc ? fg : s.borderColor.value.value;
+        // Dropdown panel/trigger/search outlines follow the theme surface
+        // token (same source as the count badges) — the old slicerBar
+        // borderColor knob is retired; tile framing belongs to the shared
+        // Border card alone (Neil live-QA 2026-07-16, duplicate-knob cull).
+        const borderClr = hc ? fg : surfaceTokens(this.resolvedTheme).border;
         const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         const labelClr = hc ? fg : s.labelColor.value.value;
         const itemBg = hc ? bg : "#ffffff";
@@ -1093,5 +1230,7 @@ export class Visual implements IVisual {
             this.activePanel.remove();
             this.activePanel = null;
         }
+        this.cornerSignature?.destroy();
+        this.cornerSignature = null;
     }
 }

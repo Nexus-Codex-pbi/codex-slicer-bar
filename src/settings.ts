@@ -9,6 +9,8 @@ import FormattingSettingsModel = formattingSettings.Model;
 
 import { BackgroundSettings } from "./shared/backgroundSettings";
 import { TitleSettings } from "./shared/titleSettings";
+import { BorderSettings } from "./shared/borderSettings";
+import { CardSignatureSettings } from "./shared/cardSignatureSettings";
 import { textAlignFor, makeFontControl } from "./shared/textFormatting";
 
 // TitleSettings + alignment helpers live in _shared/formatting/ (D-13,
@@ -26,18 +28,12 @@ export class SlicerBarSettings extends FormattingSettingsCard {
     name = "slicerBar";
     displayName = "Slicer Bar";
 
-    backgroundColor = new formattingSettings.ColorPicker({
-        name: "backgroundColor",
-        displayName: "Background",
-        value: { value: "#ffffff" },
-        instanceKind: ConstantOrRule
-    });
-    borderColor = new formattingSettings.ColorPicker({
-        name: "borderColor",
-        displayName: "Border colour",
-        value: { value: "#e8e2d3" },
-        instanceKind: ConstantOrRule
-    });
+    // backgroundColor + borderColor slices RETIRED from the pane (Neil live-QA
+    // 2026-07-16): the shared Background and Border cards supersede both — two
+    // pickers for the same surface is exactly the "duplicate knobs" audit gap
+    // (feedback_pbi_border_card_not_uniform_across_suite). Capability
+    // properties stay DECLARED (GUID-locked schema, additive-only); dropdown
+    // panel/trigger outlines now key off the theme surface token instead.
     labelColor = new formattingSettings.ColorPicker({
         name: "labelColor",
         displayName: "Label colour",
@@ -161,10 +157,16 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         ],
         value: { displayName: "Auto", value: "auto" },
     });
+    // Title placement: when on, the visual's Title renders as the first item
+    // INSIDE the slicer bar row (inline with the chips) rather than as a
+    // separate row above it. Default off = pre-existing above-the-bar layout.
+    titleInline = new formattingSettings.ToggleSwitch({
+        name: "titleInline",
+        displayName: "Title inline with bar",
+        value: false,
+    });
 
     slices: FormattingSettingsSlice[] = [
-        this.backgroundColor,
-        this.borderColor,
         this.labelColor,
         this.labelFont,
         this.chipColor,
@@ -176,6 +178,7 @@ export class SlicerBarSettings extends FormattingSettingsCard {
         this.maxVisibleChips,
         this.maxVisibleSections,
         this.fanDirection,
+        this.titleInline,
     ];
 }
 
@@ -183,6 +186,8 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     titleSettings = new TitleSettings();
     slicerBarCard = new SlicerBarSettings();
     background = new BackgroundSettings();
+    cardSignature = new CardSignatureSettings();
+    visualBorder = new BorderSettings();
 
     // No transparency-default override here (unlike most of this batch):
     // pbiSlicerBar's PRE-EXISTING default was already a genuine opaque-white
@@ -194,5 +199,5 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     // more common "never painted" case. The shared Background card's own
     // raw default (opaque white, transparency 0) is pixel-identical.
 
-    cards = [this.titleSettings, this.slicerBarCard, this.background];
+    cards = [this.titleSettings, this.slicerBarCard, this.background, this.cardSignature, this.visualBorder];
 }
