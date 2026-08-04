@@ -26,6 +26,7 @@ import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
 import { applyBorder } from "./shared/borderSettings";
+import { LicenseGate } from "./shared/licensing";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
@@ -115,7 +116,22 @@ export class Visual implements IVisual {
     // no external filter is active. Drives the neon-lite/ghost chip states.
     private externalAvail: Map<string, Set<string>> = new Map();
 
+    private licenseGate: LicenseGate;
+
+    private lastUpdateOptions: VisualUpdateOptions | null = null;
+
+
     constructor(options: VisualConstructorOptions) {
+
+        // NO FREE TIER — an unlicensed user gets the whole visual blocked.
+
+        // The check is async, so re-run the last update once it resolves.
+
+        this.licenseGate = new LicenseGate(options.host, () => {
+
+            if (this.lastUpdateOptions) this.update(this.lastUpdateOptions);
+
+        });
         this.host = options.host;
         this.events = options.host.eventService;
         this.localizationManager = options.host.createLocalizationManager();
@@ -175,6 +191,14 @@ export class Visual implements IVisual {
 
     public update(options: VisualUpdateOptions): void {
         this.events.renderingStarted(options);
+        this.lastUpdateOptions = options;
+
+        if (this.licenseGate.blockedThisFrame()) {
+            this.target.style.display = "none";
+            this.events.renderingFinished(options);
+            return;
+        }
+        this.target.style.display = "";
 
         if (!options?.dataViews?.[0]) {
             this.events.renderingFinished(options);
