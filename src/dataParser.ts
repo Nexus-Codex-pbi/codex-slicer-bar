@@ -44,6 +44,47 @@ interface BridgeRow {
     selectionMode: string;
 }
 
+/* ─── Filter target extraction ─── */
+
+/**
+ * Derive { table, column } from a bound category column's source.expr —
+ * a faithful mirror of Microsoft's extractFilterColumnTarget
+ * (powerbi-visuals-utils-interactivityutils/src/interactivityFilterService.ts),
+ * vendored rather than imported to keep the cert-audited bundle lean.
+ * Detection is structural (shape of expr), not SQExprKind numerics, so it
+ * carries no dependency on powerbi-models enum values:
+ *  - plain column:      expr.source.entity + expr.ref
+ *  - hierarchy level:   column = expr.level; table = the LAST identityExpr's
+ *    source.entity when present (date hierarchies live in a virtual
+ *    'LocalDateTable_<guid>' — the only correct filter target), else the
+ *    hierarchy's own entity at expr.arg.arg.entity.
+ * Returns null when no shape matches; callers fall back to queryName.
+ */
+function extractColumnTarget(
+    categoryColumn: powerbi.DataViewCategoryColumn
+): { table: string; column: string } | null {
+    const col = categoryColumn as any;
+    const expr = col?.source?.expr ?? col?.expr;
+    if (!expr) return null;
+
+    // Hierarchy level (incl. auto date hierarchy): column name is the level.
+    if (typeof expr.level === "string" && expr.level) {
+        let table: string | null = null;
+        const idExprs = col.identityExprs;
+        if (Array.isArray(idExprs) && idExprs.length) {
+            table = idExprs[idExprs.length - 1]?.source?.entity ?? null;
+        }
+        if (!table) table = expr.arg?.arg?.entity ?? null;
+        return table ? { table, column: expr.level } : null;
+    }
+
+    // Plain column reference.
+    if (typeof expr.ref === "string" && expr.ref && expr.source?.entity) {
+        return { table: expr.source.entity, column: expr.ref };
+    }
+    return null;
+}
+
 /* ─── Parser ─── */
 
 /**
@@ -142,24 +183,22 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         // Section-level sort: minimum sortOrder of all items in this section
         const sectionSort = Math.min(...groupRows.map(r => r.sortOrder));
 
-        // Resolve filter target — two modes:
+        // Resolve filter target — the bound field IS the link (1180.2.2.3,
+        // fourth finding 2026-08-13). Priority order:
         //   1. Bridge-table mode: explicit "Table.Column" string in the Value
-        //      data column. Required for multi-section composite slicers
-        //      where one bridge feeds N different filter targets.
-        //   2. Simple mode: fallback to the bound Label column's
-        //      source.queryName whenever the Value field doesn't resolve to
-        //      a "Table.Column" string. This covers BOTH (a) no Value role
-        //      bound at all, and (b) a Value role bound but populated with
-        //      something other than the "Table.Column" convention (e.g. a
-        //      reviewer/user drags the same category field into the Value
-        //      well expecting it to "just filter"). Case (b) previously fell
-        //      through to `filterTarget = null` (non-interactive, static
-        //      section) — a silent filter-out failure. This is what
-        //      AppSource cert reviewers hit by default — drop a column in,
-        //      expect outward filtering. Without this, policy 1180.2.2.3
-        //      Filter Out soft-fails. queryName is derived from the field's
-        //      source column, not its (possibly renamed) display name, so
-        //      this also holds for fields the report author has renamed.
+        //      data column. Kept as an OVERRIDE for multi-section composite
+        //      slicers where one bridge feeds N different filter targets.
+        //   2. DEFAULT — structural extraction from the bound column's
+        //      source.expr, mirroring Microsoft's own
+        //      extractFilterColumnTarget (utils-interactivityutils). This is
+        //      what makes a bare "drag one column in" filter outwards with no
+        //      configuration: entity+ref for plain columns, and for hierarchy
+        //      levels the COLUMN is expr.level while the TABLE must come from
+        //      the last identityExpr — date fields resolve to a virtual
+        //      'LocalDateTable_<guid>' that no queryName string-split can
+        //      ever produce, which is precisely how a reviewer dragging a
+        //      date field got a filter aimed at a non-existent table.
+        //   3. queryName "Table.Column" split — legacy last resort only.
         let filterTarget: { table: string; column: string } | null = null;
         const firstValue = firstRow.value || "";
         if (firstValue.includes(".")) {
@@ -171,13 +210,16 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         } else {
             // effLabelIdx: in single-field mode the bound column (whichever
             // well it landed in) is the filter target source.
-            const qn = (categories[effLabelIdx].source as { queryName?: string }).queryName || "";
-            const dotIdx = qn.lastIndexOf(".");
-            if (dotIdx > 0) {
-                filterTarget = {
-                    table: qn.substring(0, dotIdx).replace(/^'|'$/g, ""),
-                    column: qn.substring(dotIdx + 1),
-                };
+            filterTarget = extractColumnTarget(categories[effLabelIdx]);
+            if (!filterTarget) {
+                const qn = (categories[effLabelIdx].source as { queryName?: string }).queryName || "";
+                const dotIdx = qn.lastIndexOf(".");
+                if (dotIdx > 0) {
+                    filterTarget = {
+                        table: qn.substring(0, dotIdx).replace(/^'|'$/g, ""),
+                        column: qn.substring(dotIdx + 1),
+                    };
+                }
             }
         }
 
