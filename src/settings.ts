@@ -48,7 +48,7 @@ export class SlicerBarSettings extends FormattingSettingsCard {
     // italic/underline are NEW sibling properties. Bold defaults true —
     // .osb-slicer-label carries a pre-existing hardcoded font-weight:600
     // (semibold-or-bolder maps to Bold-default-true per the suite's
-    // weightFor idiom; bold-off falls back to the surface's own 600).
+    // weightFor idiom; bold-off explicitly renders normal weight).
     // Alignment omitted — the bar is a flex row, label position is
     // layout-determined (matches 01-11/01-12/01-13 precedent).
     private labelFontBundle = makeFontControl("label", { fontFamily: FONT_STACK, fontSize: 11, bold: true });

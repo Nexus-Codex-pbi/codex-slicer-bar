@@ -644,10 +644,9 @@ export class Visual implements IVisual {
             label.textContent = section.name.toUpperCase() + ":";
             label.style.color = hc ? fg : this.resolvedLabelColorHex;
             label.style.fontSize = s.labelFontSize.value + "px";
-            // Section label text treatment (TEXT-01) — bold-off falls back
-            // to the surface's own pre-existing hardcoded weight 600.
+            // Bold-off is normal weight, not the stylesheet's semibold fallback.
             label.style.fontFamily = s.labelFontFamily?.value || "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
-            label.style.fontWeight = this.weightFor(s.labelBold?.value, "600");
+            label.style.fontWeight = this.weightFor(s.labelBold?.value, "400");
             label.style.fontStyle = s.labelItalic?.value ? "italic" : "normal";
             label.style.textDecoration = s.labelUnderline?.value ? "underline" : "none";
             this.slicerRow.appendChild(label);
