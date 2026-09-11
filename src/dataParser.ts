@@ -20,8 +20,10 @@ export interface SlicerSection {
     name: string;
     /** "chips" or "dropdown" — from data column or formatting fallback */
     displayMode: string;
+    displayModeFromData: boolean;
     /** "single" or "multi" — from data column or formatting fallback */
     selectionMode: string;
+    selectionModeFromData: boolean;
     /** Whether this section applies filters (false = static display) */
     interactive: boolean;
     /** Filter target: { table, column } parsed from Value field (Table.Column format) */
@@ -255,7 +257,9 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         sections.push({
             name,
             displayMode,
+            displayModeFromData: dataDisplayMode === "chips" || dataDisplayMode === "dropdown",
             selectionMode,
+            selectionModeFromData: dataSelectionMode === "single" || dataSelectionMode === "multi",
             interactive,
             filterTarget,
             defaultValue,

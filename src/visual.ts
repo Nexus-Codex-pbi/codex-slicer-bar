@@ -87,6 +87,7 @@ export class Visual implements IVisual {
 
     // Skip PBI-triggered re-render after we apply our own filters
     private selfFilterPending: boolean = false;
+    private pendingFilterSignature = "";
     private initialised: boolean = false;
     private lastJsonFilters: unknown;
     private externalConstraints: BasicFilter[] = [];
@@ -376,9 +377,9 @@ export class Visual implements IVisual {
             this.applyFormattingDefaults();
 
             {
-                this.selfFilterPending = false;
                 // Read filters on every update to respond to cross-filtering from other visuals
                 this.readAppliedFilters(options);
+                this.selfFilterPending = false;
 
                 this.initialised = true;
                 let defaultsChanged = false;
@@ -445,7 +446,7 @@ export class Visual implements IVisual {
         const globalSelection = String(s.defaultSelectionMode.value.value || "single");
 
         for (const section of this.sections) {
-            if (section.displayMode !== "chips" && section.displayMode !== "dropdown") {
+            if (!section.displayModeFromData) {
                 if (globalDisplay === "chips" || globalDisplay === "dropdown") {
                     section.displayMode = globalDisplay;
                 } else {
@@ -453,7 +454,7 @@ export class Visual implements IVisual {
                         ? "chips" : "dropdown";
                 }
             }
-            if (section.selectionMode !== "single" && section.selectionMode !== "multi") {
+            if (!section.selectionModeFromData) {
                 section.selectionMode = globalSelection;
             }
         }
@@ -1104,6 +1105,7 @@ export class Visual implements IVisual {
         }
 
         this.selfFilterPending = true;
+        this.pendingFilterSignature = JSON.stringify(filters);
         try {
             if (filters.length > 0) {
                 (this.host as any).applyJsonFilter(filters, "general", "filter", 0 /* merge */);
@@ -1132,6 +1134,9 @@ export class Visual implements IVisual {
             // is a complete reset and must not be swallowed as a self-filter echo.
             if (!Array.isArray(jsonFilters) || jsonFilters === this.lastJsonFilters) return;
             this.lastJsonFilters = jsonFilters;
+            // Preserve the UI's all-selected state when its own remove-filter
+            // operation is acknowledged. A different payload is a host restore.
+            if (this.selfFilterPending && JSON.stringify(jsonFilters) === this.pendingFilterSignature) return;
             this.selections.clear();
             this.externalConstraints = [];
             const targetToSection = new Map<string, string>();
