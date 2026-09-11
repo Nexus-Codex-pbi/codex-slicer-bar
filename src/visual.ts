@@ -91,6 +91,8 @@ export class Visual implements IVisual {
 
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
+    private contextMenuHandler: (e: MouseEvent) => void;
+    private destroyed = false;
 
     // State for the Selected Chip Colour fx wiring (TRANS-04) — this
     // visual has no per-category selectionId concept (it drives external
@@ -204,13 +206,15 @@ export class Visual implements IVisual {
         document.addEventListener("click", this.documentClickHandler);
 
         // Context menu — right-click shows PBI context menu
-        this.target.addEventListener("contextmenu", (e: MouseEvent) => {
+        this.contextMenuHandler = (e: MouseEvent) => {
             this.selectionManager.showContextMenu({}, { x: e.clientX, y: e.clientY });
             e.preventDefault();
-        });
+        };
+        this.target.addEventListener("contextmenu", this.contextMenuHandler);
     }
 
     public update(options: VisualUpdateOptions): void {
+        if (this.destroyed) return;
         this.events.renderingStarted(options);
         this.lastUpdateOptions = options;
 
@@ -1371,13 +1375,21 @@ export class Visual implements IVisual {
         // Drop the in-flight licence check FIRST: its redraw callback replays
         // update() against a torn-down target otherwise (NEXUS lifecycle finding).
         this.licenseGate.dispose();
+        this.destroyed = true;
         this.closeAllDropdowns();
         document.removeEventListener("click", this.documentClickHandler);
+        this.target.removeEventListener("contextmenu", this.contextMenuHandler);
         if (this.activePanel) {
             this.activePanel.remove();
             this.activePanel = null;
         }
         this.cornerSignature?.destroy();
         this.cornerSignature = null;
+        this.lastUpdateOptions = null;
+        this.sections = [];
+        this.cachedSections = null;
+        this.selections.clear();
+        this.externalAvail.clear();
+        this.target.replaceChildren();
     }
 }
