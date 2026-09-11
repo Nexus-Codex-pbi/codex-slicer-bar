@@ -65,7 +65,7 @@ export class Visual implements IVisual {
     private events: IVisualEventService;
     private localizationManager: ILocalizationManager;
     private selectionManager: ISelectionManager;
-    private formattingSettings: VisualFormattingSettingsModel;
+    private formattingSettings = new VisualFormattingSettingsModel();
     private formattingSettingsService: FormattingSettingsService;
 
     private tooltipService: ITooltipService;
@@ -230,6 +230,7 @@ export class Visual implements IVisual {
             e.preventDefault();
         };
         this.target.addEventListener("contextmenu", this.contextMenuHandler);
+        this.renderSlicerBar(this.target.clientWidth);
     }
 
     public update(options: VisualUpdateOptions): void {
@@ -250,6 +251,7 @@ export class Visual implements IVisual {
 
         if (!options?.dataViews?.[0]) {
             this.resetData();
+            this.renderSlicerBar(options.viewport.width);
             this.events.renderingFinished(options);
             return;
         }
