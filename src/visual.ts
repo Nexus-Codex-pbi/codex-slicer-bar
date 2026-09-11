@@ -1246,6 +1246,7 @@ export class Visual implements IVisual {
             // Create fixed-position panel attached to document body
             const panel = document.createElement("div");
             panel.className = "osb-fixed-panel";
+            panel.addEventListener("contextmenu", this.contextMenuHandler);
             panel.id = `osb-panel-${this.instanceId}`;
             panel.setAttribute("role", "dialog");
             panel.setAttribute("aria-label", label);
