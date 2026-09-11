@@ -475,6 +475,7 @@ export class Visual implements IVisual {
      * ═══════════════════════════════════════ */
 
     private renderSlicerBar(viewportWidth: number): void {
+        this.closeAllDropdowns();
         const s = this.formattingSettings.slicerBarCard;
         const hc = this.isHighContrast;
         const fg = hc ? this.colorPalette.foreground.value : "";
