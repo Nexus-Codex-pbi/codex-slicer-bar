@@ -2,6 +2,7 @@
 
 import powerbi from "powerbi-visuals-api";
 import DataView = powerbi.DataView;
+import { formatModelNumber } from "./shared/numberFormat";
 
 /* ─── Interfaces ─── */
 
@@ -102,7 +103,7 @@ function extractColumnTarget(
  * - SelectionMode: "single" or "multi" (default: "single")
  * - Value field encodes filter target as "Table.Column" — if empty, section is non-interactive (static)
  */
-export function parseDataView(dataView: DataView): SlicerSection[] {
+export function parseDataView(dataView: DataView, locale?: string): SlicerSection[] {
     if (!dataView?.categorical) return [];
 
     const cat = dataView.categorical;
@@ -146,7 +147,9 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         const rawValue: FilterValue = raw instanceof Date ? raw.toISOString() : raw ?? null;
         const label = raw === null || raw === undefined ? "(Blank)"
             : raw === "" ? "(Empty)"
-            : raw instanceof Date ? raw.toLocaleDateString() : String(raw);
+            : raw instanceof Date ? raw.toLocaleDateString(locale)
+            : typeof raw === "number" ? formatModelNumber(raw, categories[effLabelIdx].source.format, locale)
+            : String(raw);
         rows.push({
             category: singleSectionName ?? String(categories[catIdx].values[r] ?? "(Blank)"),
             label,

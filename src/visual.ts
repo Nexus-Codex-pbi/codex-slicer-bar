@@ -319,7 +319,7 @@ export class Visual implements IVisual {
             this.labelColorAuthored = (dv.metadata?.objects as any)?.slicerBar?.labelColor != null;
             this.titleColorAuthored = (dv.metadata?.objects as any)?.titleSettings?.titleColor != null;
 
-            const parsed = parseDataView(dv);
+            const parsed = parseDataView(dv, this.host.locale);
             if (!parsed.length) {
                 this.resetData();
                 this.renderSlicerBar(options.viewport.width);
