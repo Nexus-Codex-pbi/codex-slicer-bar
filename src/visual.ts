@@ -744,7 +744,7 @@ export class Visual implements IVisual {
      * chip on the default light background — which round 1 never touched at
      * all — sat at 1.453:1.
      *
-     * So: keep the declared default wherever it already clears WCAG 3:1 on the
+     * So: keep the declared default wherever it already clears WCAG 4.5:1 on the
      * composited surface (the cyan-on-dark neon ring every dark report ships
      * today measures 11.808:1 and is untouched), and only where it does not,
      * fall back to contrastInk() against that same surface. An ink the AUTHOR
@@ -752,11 +752,13 @@ export class Visual implements IVisual {
      */
     private legibleChipInk(surfaceHex: string): string {
         const ink = String(this.resolvedChipTextColorHex ?? "");
-        if (this.chipTextColorAuthored || contrastRatio(ink, surfaceHex) >= 3) return ink;
+        if (this.chipTextColorAuthored || contrastRatio(ink, surfaceHex) >= 4.5) return ink;
         // surfaceTokens("light").text is the ink for LIGHT surfaces (dark ink)
         // and surfaceTokens("dark").text the ink for DARK ones, which is the
         // (surface, darkInk, lightInk) order contrastInk expects.
-        return contrastInk(surfaceHex, surfaceTokens("light").text, surfaceTokens("dark").text);
+        const preferred = contrastInk(surfaceHex, surfaceTokens("light").text, surfaceTokens("dark").text);
+        return contrastRatio(preferred, surfaceHex) >= 4.5
+            ? preferred : contrastInk(surfaceHex, "#000000", "#ffffff");
     }
 
     /* ─── Chips Section ─── */
