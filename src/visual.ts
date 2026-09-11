@@ -194,6 +194,10 @@ export class Visual implements IVisual {
         this.lastUpdateOptions = options;
 
         if (this.licenseGate.blockedThisFrame()) {
+            // The fan-out panel lives on document.body, NOT under this.target, so
+            // hiding the root leaves it on screen with live handlers — NEXUS cycle-11
+            // §1 landed a second filter AFTER the denial. Tear it down first.
+            this.closeAllDropdowns();
             this.target.style.display = "none";
             this.events.renderingFinished(options);
             return;
@@ -737,6 +741,9 @@ export class Visual implements IVisual {
     }
 
     private onChipClick(section: SlicerSection, label: string): void {
+        // A blocked visual must not mutate selection state. Chips can survive a
+        // denial that arrives mid-session (NEXUS cycle-11 §1).
+        if (this.licenseGate.blocked) return;
         const sel = this.selections.get(section.name) || new Set<string>();
 
         if (section.selectionMode === "single") {
@@ -947,6 +954,10 @@ export class Visual implements IVisual {
      * instead of clobbering each other.
      */
     private applyAllFilters(): void {
+        // Backstop for every interaction path into the filter pipeline: a
+        // definitively unlicensed visual emits no filter. Belt to onChipClick's
+        // braces, because search, clear-all and dropdown items land here too.
+        if (this.licenseGate.blocked) return;
         const filters: BasicFilter[] = [];
         for (const section of this.sections) {
             if (!section.filterTarget) continue;
