@@ -338,8 +338,17 @@ export class Visual implements IVisual {
                 // Read filters on every update to respond to cross-filtering from other visuals
                 this.readAppliedFilters(options);
 
-                // Auto-select defaults only on first init
-                if (!this.initialised) {
+                // Auto-select defaults only on first init — where "first init"
+                // means the first update that actually delivered usable
+                // sections. An empty categorical view (field wells still
+                // resolving, a report mid-load, a cross-filter that eliminated
+                // every row) is a GAP, not a first render: consuming the
+                // one-shot there silently dropped EVERY configured default for
+                // the life of the visual, so the report opened unfiltered and
+                // never recovered when the real data arrived a frame later
+                // (NEXUS cycle-11 §4, case `empty-first-then-data`).
+                const hasUsableSections = this.sections.some(section => section.items.length > 0);
+                if (!this.initialised && hasUsableSections) {
                     this.initialised = true;
                     let appliedAnyDefault = false;
                     for (const section of this.sections) {
@@ -512,9 +521,18 @@ export class Visual implements IVisual {
         const dir = String(s.fanDirection.value.value || "auto");
         this.slicerRow.style.justifyContent = dir === "left" ? "flex-end" : "";
 
-        for (const section of this.sections) {
-            if (sectionCount >= maxSections) break;
+        // "Max visible sections" caps how wide the bar gets, but a section it
+        // hid could still hold an active selection — a configured default, or
+        // one restored from the host — and that selection is still emitted as a
+        // filter. The bar then announced "1 active" for a filter with no
+        // visible control to see, change or clear (NEXUS cycle-11 §4, case
+        // `default-hidden-section`). A section that is filtering the report is
+        // therefore always rendered; the cap still hides every section that
+        // filters nothing, and the emitted filter set is unchanged either way.
+        const visibleSections = this.sections.filter((section, index) =>
+            index < maxSections || (this.selections.get(section.name)?.size || 0) > 0);
 
+        for (const section of visibleSections) {
             if (sectionCount > 0) {
                 const sep = document.createElement("span");
                 sep.className = "osb-slicer-sep";
