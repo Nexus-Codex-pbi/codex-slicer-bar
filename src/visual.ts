@@ -19,7 +19,7 @@ import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
-import { toRgba } from "./shared/colorHelpers";
+import { toRgba, compositeOver, surfaceTone } from "./shared/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
@@ -1197,7 +1197,30 @@ export class Visual implements IVisual {
         const chipFill = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
         // fx-resolved Selected Chip Text Colour (TEXT-02) — label text
         // only; selection fill/border chrome untouched (T-14-05).
-        const chipText = hc ? bg : this.resolvedChipTextColorHex;
+        //
+        // NEXUS cycle-11 §7 (class 1 — ink judged against a surface nobody
+        // sees): unlike the v2 ring chip, a SELECTED dropdown item paints the
+        // chip colour as a real FILL, so its ink has to be judged against the
+        // surface a viewer actually sees — that fill at its own transparency
+        // over the panel's background, which is itself the Background card
+        // composited over whatever the host theme paints behind it.
+        const hostBgHex = this.colorPalette.background?.value || "#ffffff";
+        const panelSurfaceHex = compositeOver(outerBgHex, outerBgTransparencyPct, hostBgHex);
+        const selectedSurfaceHex = compositeOver(this.resolvedChipColorHex, chipTransparencyPct, panelSurfaceHex);
+        // Selected chip and Selected chip text BOTH declare the same cyan
+        // (settings.ts chipColor/chipTextColor) because v2 reads that pair as
+        // "ring + matching text" on the chip. On the filled dropdown item the
+        // same pair paints the label in the fill's own colour — measured
+        // rgb(0,217,255) on rgb(0,217,255), i.e. no label at all. ONLY that
+        // vanishing case is re-inked, from the visible surface's tone; every
+        // pairing that is still distinguishable (every explicit override, and
+        // every transparency setting, which shifts the visible fill) keeps the
+        // picker's colour exactly as saved.
+        const resolvedInkHex = String(this.resolvedChipTextColorHex ?? "");
+        const inkVanishesIntoFill = resolvedInkHex.toLowerCase() === selectedSurfaceHex.toLowerCase();
+        const chipText = hc
+            ? bg
+            : (inkVanishesIntoFill ? surfaceTokens(surfaceTone(selectedSurfaceHex)).text : resolvedInkHex);
         // Dropdown panel/trigger/search outlines follow the theme surface
         // token (same source as the count badges) — the old slicerBar
         // borderColor knob is retired; tile framing belongs to the shared
