@@ -1390,11 +1390,15 @@ export class Visual implements IVisual {
     }
 
     private navigateOptions(event: KeyboardEvent, options: HTMLElement[]): void {
+        if (event.target instanceof HTMLInputElement && event.target.type !== "checkbox"
+            && event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
         if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || !options.length) return;
         event.preventDefault();
         const index = options.indexOf(document.activeElement as HTMLElement);
+        const previous = event.key === "ArrowLeft" || event.key === "ArrowUp";
         const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
-            : (index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + options.length) % options.length;
+            : index < 0 ? (previous ? options.length - 1 : 0)
+            : (index + (previous ? -1 : 1) + options.length) % options.length;
         options[next].focus();
     }
 
