@@ -84,6 +84,7 @@ The visual provides the following format pane cards:
    - Hover to see tooltips with section, label, value, and short label
 
 ## Limitations
+- Defaults apply when a section first arrives, its filter target changes, or its configured default changes. Clearing filters does not reapply an unchanged default. An empty or unbound data view resets cached options and selections.
 - The visual expects one row per item per section. Duplicate items within a section may cause unexpected behavior.
 - Each data role accepts only one field.
 - The Value role must be a column that can be used in a filter (typically a table.column reference).

@@ -92,6 +92,7 @@ export class Visual implements IVisual {
     private externalConstraints: BasicFilter[] = [];
     private acceptedSelections: Map<string, Set<FilterValue>> = new Map();
     private filterError = false;
+    private sectionDefaults = new Map<string, { target: string; value: string }>();
 
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
@@ -234,6 +235,7 @@ export class Visual implements IVisual {
         this.target.style.display = "";
 
         if (!options?.dataViews?.[0]) {
+            this.resetData();
             this.events.renderingFinished(options);
             return;
         }
@@ -300,6 +302,12 @@ export class Visual implements IVisual {
             this.chipTextColorAuthored = chipTextObject !== undefined && chipTextObject !== null;
 
             const parsed = parseDataView(dv);
+            if (!parsed.length) {
+                this.resetData();
+                this.renderSlicerBar(options.viewport.width);
+                this.events.renderingFinished(options);
+                return;
+            }
 
             // Per-section cache: keep the fullest set of items ever seen for each
             // section. This lets us preserve our own slicer options after applying
@@ -372,35 +380,30 @@ export class Visual implements IVisual {
                 // Read filters on every update to respond to cross-filtering from other visuals
                 this.readAppliedFilters(options);
 
-                // Auto-select defaults only on first init — where "first init"
-                // means the first update that actually delivered usable
-                // sections. An empty categorical view (field wells still
-                // resolving, a report mid-load, a cross-filter that eliminated
-                // every row) is a GAP, not a first render: consuming the
-                // one-shot there silently dropped EVERY configured default for
-                // the life of the visual, so the report opened unfiltered and
-                // never recovered when the real data arrived a frame later
-                // (NEXUS cycle-11 §4, case `empty-first-then-data`).
-                const hasUsableSections = this.sections.some(section => section.items.length > 0);
-                if (!this.initialised && hasUsableSections) {
-                    this.initialised = true;
-                    let appliedAnyDefault = false;
-                    for (const section of this.sections) {
-                        if (!section.defaultValue) continue;
-                        const sel = this.selections.get(section.name);
-                        if (sel && sel.size > 0) continue;
-                        const match = section.items.find(
-                            item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
-                        );
-                        if (match) {
-                            this.selections.set(section.name, new Set([match.rawValue]));
-                            if (section.filterTarget) appliedAnyDefault = true;
+                this.initialised = true;
+                let defaultsChanged = false;
+                for (const section of this.sections) {
+                    const target = JSON.stringify(section.filterTarget);
+                    const previous = this.sectionDefaults.get(section.name);
+                    this.sectionDefaults.set(section.name, { target, value: section.defaultValue });
+                    const rebound = previous && previous.target !== target;
+                    const changed = previous && previous.value !== section.defaultValue;
+                    if (!previous || rebound || changed) {
+                        if (previous) {
+                            this.selections.delete(section.name);
+                            defaultsChanged = true;
+                        } else if (this.selections.get(section.name)?.size) {
+                            continue;
                         }
-                    }
-                    if (appliedAnyDefault) {
-                        this.applyAllFilters();
+                        if (!section.defaultValue) continue;
+                        const match = section.items.find(item =>
+                            item.label.toLowerCase() === section.defaultValue.toLowerCase());
+                        if (!match) continue;
+                        this.selections.set(section.name, new Set([match.rawValue]));
+                        defaultsChanged = true;
                     }
                 }
+                if (defaultsChanged) this.applyAllFilters();
             }
 
             this.renderSlicerBar(options.viewport.width);
@@ -412,6 +415,24 @@ export class Visual implements IVisual {
 
     public getFormattingModel(): powerbi.visuals.FormattingModel {
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
+    }
+
+    private resetData(): void {
+        const hadFilters = [...this.selections.values()].some(values => values.size > 0)
+            || this.externalConstraints.length > 0;
+        this.closeAllDropdowns();
+        this.sections = [];
+        this.cachedSections = null;
+        this.selections.clear();
+        this.acceptedSelections.clear();
+        this.externalAvail.clear();
+        this.externalConstraints = [];
+        this.sectionDefaults.clear();
+        this.lastJsonFilters = undefined;
+        this.initialised = false;
+        this.slicerRow.replaceChildren();
+        this.titleEl.style.display = "none";
+        if (hadFilters) this.applyAllFilters();
     }
 
     /* ═══════════════════════════════════════
@@ -1423,6 +1444,7 @@ export class Visual implements IVisual {
         this.acceptedSelections.clear();
         this.externalConstraints = [];
         this.lastJsonFilters = undefined;
+        this.sectionDefaults.clear();
         this.target.replaceChildren();
     }
 }
