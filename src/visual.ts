@@ -310,22 +310,34 @@ export class Visual implements IVisual {
                 return;
             }
 
-            // Per-section cache: keep the fullest set of items ever seen for each
-            // section. This lets us preserve our own slicer options after applying
-            // our own filter (which shrinks the dataView), while still letting
-            // EXTERNAL filters from other visuals/slicers narrow the displayed
-            // items (the filter-in certification requirement).
+            // Reconcile host state before attributing a narrowed domain to our
+            // own selection. Missing sections may still be external survivors.
+            this.sections = [...parsed, ...(this.cachedSections || []).filter(c =>
+                !parsed.some(ps => ps.name === c.name))];
+            this.readAppliedFilters(options);
+            let domainSelectionChanged = false;
             const nextCache: SlicerSection[] = [];
             const parsedByName = new Map<string, SlicerSection>();
             for (const ps of parsed) parsedByName.set(ps.name, ps);
 
             for (const ps of parsed) {
                 const cached = this.cachedSections?.find(c => c.name === ps.name);
-                if (cached && cached.items.length > ps.items.length) {
-                    // Merge: keep previously-seen fullest items as cache
+                const sameTarget = cached && JSON.stringify(cached.filterTarget) === JSON.stringify(ps.filterTarget);
+                const cachedValues = new Set(cached?.items.map(item => item.rawValue));
+                const subset = sameTarget && ps.items.every(item => cachedValues.has(item.rawValue));
+                if (cached && subset) {
                     nextCache.push({ ...ps, items: cached.items });
                 } else {
                     nextCache.push(ps);
+                    const selected = this.selections.get(ps.name);
+                    if (cached && selected?.size) {
+                        const values = new Set(ps.items.map(item => item.rawValue));
+                        const retained = new Set([...selected].filter(value => sameTarget && values.has(value)));
+                        if (retained.size !== selected.size) {
+                            this.selections.set(ps.name, retained);
+                            domainSelectionChanged = true;
+                        }
+                    }
                 }
             }
             // Preserve cached sections that VANISHED from this update entirely —
@@ -357,7 +369,7 @@ export class Visual implements IVisual {
             this.sections = nextCache.map(c => {
                 const ps = parsedByName.get(c.name);
                 const ownSel = this.selections.get(c.name);
-                if (ownSel && ownSel.size > 0) {
+                if (ownSel?.size && ps?.items.every(item => ownSel.has(item.rawValue))) {
                     return c;
                 }
                 if (!ps) {
@@ -377,8 +389,6 @@ export class Visual implements IVisual {
             this.applyFormattingDefaults();
 
             {
-                // Read filters on every update to respond to cross-filtering from other visuals
-                this.readAppliedFilters(options);
                 this.selfFilterPending = false;
 
                 this.initialised = true;
@@ -404,7 +414,7 @@ export class Visual implements IVisual {
                         defaultsChanged = true;
                     }
                 }
-                if (defaultsChanged) this.applyAllFilters();
+                if (defaultsChanged || domainSelectionChanged) this.applyAllFilters();
             }
 
             this.renderSlicerBar(options.viewport.width);
