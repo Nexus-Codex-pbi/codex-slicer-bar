@@ -554,7 +554,7 @@ export class Visual implements IVisual {
         this.resolvedRootSurfaceHex = compositeOver(
             outerBgHex, outerBgTransparencyPct, this.colorPalette.background?.value || "#ffffff");
         this.slicerRow.style.background = "transparent";
-        this.slicerRow.style.width = viewportWidth + "px";
+        this.slicerRow.style.width = "100%";
 
         // v3 theme pick (LOOK-05) — drives the CSS-only cyan hover ring and
         // the magenta clear-all hover via custom properties (visual.less);
@@ -590,7 +590,7 @@ export class Visual implements IVisual {
 
         // Right-justify the bar when fan direction is left
         const dir = String(s.fanDirection.value.value || "auto");
-        this.slicerRow.style.justifyContent = dir === "left" ? "flex-end" : "";
+        this.slicerRow.style.justifyContent = dir === "left" ? "safe flex-end" : "";
 
         // "Max visible sections" caps how wide the bar gets, but a section it
         // hid could still hold an active selection — a configured default, or
@@ -1233,15 +1233,18 @@ export class Visual implements IVisual {
     }
 
     private positionPanel(panel: HTMLElement, triggerRect: DOMRect, dir: string): void {
-        const margin = 4;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const margin = Math.min(4, vw / 2, vh / 2);
 
         // Make visible to measure
         panel.style.visibility = "hidden";
         panel.style.display = "inline-flex";
+        panel.style.maxWidth = Math.max(0, vw - margin * 2) + "px";
+        panel.style.maxHeight = Math.max(0, vh - margin * 2) + "px";
+        panel.style.overflow = "auto";
 
         const panelRect = panel.getBoundingClientRect();
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
 
         let resolvedDir = dir;
         if (resolvedDir === "auto") {
@@ -1289,10 +1292,8 @@ export class Visual implements IVisual {
         }
 
         // Clamp to viewport
-        if (top < margin) top = margin;
-        if (top + panelRect.height > vh - margin) top = vh - margin - panelRect.height;
-        if (left < margin) left = margin;
-        if (left + panelRect.width > vw - margin) left = vw - margin - panelRect.width;
+        top = Math.max(margin, Math.min(top, vh - margin - panelRect.height));
+        left = Math.max(margin, Math.min(left, vw - margin - panelRect.width));
 
         panel.style.top = top + "px";
         panel.style.left = left + "px";
