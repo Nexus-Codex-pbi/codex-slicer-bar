@@ -5,8 +5,11 @@ import DataView = powerbi.DataView;
 
 /* ─── Interfaces ─── */
 
+export type FilterValue = string | number | boolean | null;
+
 export interface SlicerItem {
     label: string;
+    rawValue: FilterValue;
     value: string;
     shortLabel: string;
     sort: number;
@@ -36,6 +39,7 @@ export interface SlicerSection {
 interface BridgeRow {
     category: string;
     label: string;
+    rawValue: FilterValue;
     value: string;
     shortLabel: string;
     defaultValue: string;
@@ -132,16 +136,22 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         ? (categories[effLabelIdx].source.displayName || "Filter")
         : null;
 
-    const rowCount = categories[0]?.values?.length ?? 0;
+    const rowCount = categories[effLabelIdx]?.values?.length ?? 0;
 
     const rows: BridgeRow[] = [];
     for (let r = 0; r < rowCount; r++) {
+        const raw = categories[effLabelIdx].values[r];
+        const rawValue: FilterValue = raw instanceof Date ? raw.toISOString() : raw ?? null;
+        const label = raw === null || raw === undefined ? "(Blank)"
+            : raw === "" ? "(Empty)"
+            : raw instanceof Date ? raw.toLocaleDateString() : String(raw);
         rows.push({
-            category: singleSectionName ?? String(categories[catIdx].values[r] || ""),
-            label: String(categories[effLabelIdx].values[r] || ""),
-            value: valueIdx !== undefined ? String(categories[valueIdx].values[r] || "") : "",
-            shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] || "") : "",
-            defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] || "") : "",
+            category: singleSectionName ?? String(categories[catIdx].values[r] ?? "(Blank)"),
+            label,
+            rawValue,
+            value: valueIdx !== undefined ? String(categories[valueIdx].values[r] ?? "") : "",
+            shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] ?? "") : "",
+            defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] ?? "") : "",
             sortOrder: sortIdx !== undefined ? Number(categories[sortIdx].values[r]) || 0 : 0,
             displayMode: displayModeIdx !== undefined ? String(categories[displayModeIdx].values[r] || "").toLowerCase() : "",
             selectionMode: selectionModeIdx !== undefined ? String(categories[selectionModeIdx].values[r] || "").toLowerCase() : "",
@@ -165,13 +175,14 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
     for (const name of categoryOrder) {
         const groupRows = grouped.get(name)!;
 
-        // Deduplicate items by label
+        // Display strings are not identities: 0 and "0" must remain distinct.
         const seen = new Set<string>();
         const items: SlicerItem[] = [];
         for (const row of groupRows) {
-            if (!row.label || seen.has(row.label)) continue;
-            seen.add(row.label);
-            items.push({ label: row.label, value: row.value, shortLabel: row.shortLabel, sort: row.sortOrder });
+            const key = JSON.stringify(row.rawValue);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            items.push({ label: row.label, rawValue: row.rawValue, value: row.value, shortLabel: row.shortLabel, sort: row.sortOrder });
         }
         items.sort((a, b) => a.sort - b.sort);
 

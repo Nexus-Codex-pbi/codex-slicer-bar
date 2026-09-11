@@ -20,7 +20,7 @@ import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
 import { toRgba, compositeOver, contrastInk, contrastRatio } from "./shared/colorHelpers";
-import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
+import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
@@ -53,7 +53,7 @@ interface BasicFilter extends IFilter {
     $schema: string;
     target: { table: string; column: string };
     operator: string;
-    values: (string | number)[];
+    values: FilterValue[];
     filterType: number;
 }
 
@@ -75,8 +75,8 @@ export class Visual implements IVisual {
     private sections: SlicerSection[] = [];
     private cachedSections: SlicerSection[] | null = null;
 
-    /** Selection state per section: sectionName → selected labels */
-    private selections: Map<string, Set<string>> = new Map();
+    /** Selection state per section, keyed by typed filter value, never display text. */
+    private selections: Map<string, Set<FilterValue>> = new Map();
 
     // DOM
     private slicerRow: HTMLElement;
@@ -90,7 +90,7 @@ export class Visual implements IVisual {
     private initialised: boolean = false;
     private lastJsonFilters: unknown;
     private externalConstraints: BasicFilter[] = [];
-    private acceptedSelections: Map<string, Set<string>> = new Map();
+    private acceptedSelections: Map<string, Set<FilterValue>> = new Map();
     private filterError = false;
 
     // Store reference to document click handler for cleanup in destroy()
@@ -141,7 +141,7 @@ export class Visual implements IVisual {
     // Per-section survivor sets when an EXTERNAL cross-filter has narrowed the
     // incoming dataView (section name → labels still present). Empty map when
     // no external filter is active. Drives the neon-lite/ghost chip states.
-    private externalAvail: Map<string, Set<string>> = new Map();
+    private externalAvail: Map<string, Set<FilterValue>> = new Map();
 
     private licenseGate: LicenseGate;
 
@@ -358,7 +358,7 @@ export class Visual implements IVisual {
                     return c;
                 }
                 if (c.items.length > ps.items.length) {
-                    this.externalAvail.set(c.name, new Set(ps.items.map(i => i.label)));
+                    this.externalAvail.set(c.name, new Set(ps.items.map(i => i.rawValue)));
                     return c;
                 }
                 return ps;
@@ -393,7 +393,7 @@ export class Visual implements IVisual {
                             item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
                         );
                         if (match) {
-                            this.selections.set(section.name, new Set([match.label]));
+                            this.selections.set(section.name, new Set([match.rawValue]));
                             if (section.filterTarget) appliedAnyDefault = true;
                         }
                     }
@@ -597,7 +597,7 @@ export class Visual implements IVisual {
             // interactive filter group, dims at zero. Derived entirely from
             // this.selections (no new format-pane property).
             if (section.interactive) {
-                const groupSel = this.selections.get(section.name) || new Set<string>();
+                const groupSel = this.selections.get(section.name) || new Set<FilterValue>();
                 const countBadge = document.createElement("span");
                 countBadge.className = "osb-chip-count";
                 countBadge.textContent = String(groupSel.size);
@@ -719,7 +719,7 @@ export class Visual implements IVisual {
         const maxVisible = s.maxVisibleChips.value || 8;
         const visible = section.items.slice(0, maxVisible);
         const overflow = section.items.slice(maxVisible);
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
 
         for (const item of visible) {
             const chip = document.createElement("button");
@@ -730,7 +730,7 @@ export class Visual implements IVisual {
             // text only; selection fill/border chrome below is untouched.
             this.applyChipFont(chip, s, "500");
 
-            if (sel.has(item.label)) {
+            if (sel.has(item.rawValue)) {
                 chip.classList.add("selected");
                 if (hc) {
                     // HC keeps the pre-existing solid-fill inversion (fg
@@ -783,7 +783,7 @@ export class Visual implements IVisual {
                 // would hurt contrast) and when no external filter is live.
                 const avail = this.externalAvail.get(section.name);
                 if (avail && !hc) {
-                    if (avail.has(item.label)) {
+                    if (avail.has(item.rawValue)) {
                         const litePct = 40 * (this.resolvedTheme === "dark" ? 1 : 0.55);
                         const liteMix = `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(litePct)}%, transparent)`;
                         chip.style.borderColor = this.resolvedChipColorHex;
@@ -823,12 +823,12 @@ export class Visual implements IVisual {
 
             chip.addEventListener("click", (e: MouseEvent) => {
                 e.stopPropagation();
-                this.onChipClick(section, item.label);
+                this.onChipClick(section, item.rawValue);
             });
             chip.addEventListener("keydown", (e: KeyboardEvent) => {
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    this.onChipClick(section, item.label);
+                    this.onChipClick(section, item.rawValue);
                 }
             });
 
@@ -847,24 +847,24 @@ export class Visual implements IVisual {
         }
     }
 
-    private onChipClick(section: SlicerSection, label: string): void {
+    private onChipClick(section: SlicerSection, value: FilterValue): void {
         // A blocked visual must not mutate selection state. Chips can survive a
         // denial that arrives mid-session (NEXUS cycle-11 §1).
         if (this.licenseGate.blocked) return;
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
 
         if (section.selectionMode === "single") {
-            if (sel.has(label) && sel.size === 1) {
+            if (sel.has(value) && sel.size === 1) {
                 sel.clear();
             } else {
                 sel.clear();
-                sel.add(label);
+                sel.add(value);
             }
         } else {
-            if (sel.has(label)) {
-                sel.delete(label);
+            if (sel.has(value)) {
+                sel.delete(value);
             } else {
-                sel.add(label);
+                sel.add(value);
             }
         }
 
@@ -876,17 +876,19 @@ export class Visual implements IVisual {
     /* ─── Dropdown Section ─── */
 
     private renderDropdownSection(section: SlicerSection, s: any): void {
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
         const count = sel.size;
+        const selectedLabel = section.items.find(item => item.rawValue === Array.from(sel)[0])?.label
+            ?? String(Array.from(sel)[0] ?? "(Blank)");
 
         let triggerLabel: string;
         if (section.selectionMode === "single") {
-            triggerLabel = count === 1 ? Array.from(sel)[0] : `Select ${section.name.toLowerCase()}`;
+            triggerLabel = count === 1 ? selectedLabel : `Select ${section.name.toLowerCase()}`;
         } else {
             if (count === 0 || count === section.items.length) {
                 triggerLabel = `All ${section.name.toLowerCase()}`;
             } else if (count === 1) {
-                triggerLabel = Array.from(sel)[0];
+                triggerLabel = selectedLabel;
             } else {
                 triggerLabel = `${count} selected`;
             }
@@ -895,7 +897,7 @@ export class Visual implements IVisual {
         // Build shortLabel text from selected items
         let shortLabelText = "";
         if (count > 0) {
-            const selectedItems = section.items.filter(i => sel.has(i.label));
+            const selectedItems = section.items.filter(i => sel.has(i.rawValue));
             const labels = selectedItems.map(i => i.shortLabel).filter(sl => sl);
             if (labels.length > 0) {
                 shortLabelText = labels.join(", ");
@@ -927,7 +929,7 @@ export class Visual implements IVisual {
                     selectAll.textContent = this.localizationManager.getDisplayName("Select_All");
                     selectAll.addEventListener("click", (e: MouseEvent) => {
                         e.stopPropagation();
-                        this.selections.set(section.name, new Set(section.items.map(i => i.label)));
+                        this.selections.set(section.name, new Set(section.items.map(i => i.rawValue)));
                         this.applySectionFilter(section);
                         this.closeAllDropdowns();
                         this.renderSlicerBar(this.target.clientWidth);
@@ -977,7 +979,7 @@ export class Visual implements IVisual {
         filter?: string
     ): void {
         while (container.firstChild) { container.removeChild(container.firstChild); }
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
         let renderItems = items || section.items;
 
         if (filter) {
@@ -993,7 +995,7 @@ export class Visual implements IVisual {
             for (const item of renderItems) {
                 const el = document.createElement("div");
                 el.className = "osb-dropdown-item";
-                if (sel.has(item.label)) el.classList.add("selected");
+                if (sel.has(item.rawValue)) el.classList.add("selected");
                 el.textContent = item.label;
                 this.applyChipFont(el, s, "600");
                 el.addEventListener("mousemove", (e: MouseEvent) => {
@@ -1009,7 +1011,7 @@ export class Visual implements IVisual {
                 });
                 el.addEventListener("click", (e: MouseEvent) => {
                     e.stopPropagation();
-                    this.onChipClick(section, item.label);
+                    this.onChipClick(section, item.rawValue);
                     this.closeAllDropdowns();
                 });
                 container.appendChild(el);
@@ -1022,14 +1024,14 @@ export class Visual implements IVisual {
 
                 const cb = document.createElement("input");
                 cb.type = "checkbox";
-                cb.checked = sel.has(item.label);
+                cb.checked = sel.has(item.rawValue);
                 cb.addEventListener("change", (e: Event) => {
                     e.stopPropagation();
-                    const currentSel = this.selections.get(section.name) || new Set<string>();
+                    const currentSel = this.selections.get(section.name) || new Set<FilterValue>();
                     if (cb.checked) {
-                        currentSel.add(item.label);
+                        currentSel.add(item.rawValue);
                     } else {
-                        currentSel.delete(item.label);
+                        currentSel.delete(item.rawValue);
                     }
                     this.selections.set(section.name, currentSel);
                     this.applySectionFilter(section);
