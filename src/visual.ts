@@ -19,7 +19,7 @@ import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
-import { toRgba, compositeOver, surfaceTone } from "./shared/colorHelpers";
+import { toRgba, compositeOver, contrastInk, contrastRatio } from "./shared/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
@@ -30,6 +30,13 @@ import { LicenseGate } from "./shared/licensing";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
+
+/** The stylesheet's own unselected-chip fill — a MIRROR of
+ * `style/visual.less` `.osb-period-chip { background: #f5f4f0 }`, not a new
+ * colour: the neon-lite branch sets no inline background, so this is the
+ * surface its ink is painted on (NEXUS cycle-11 §7). Never reaches the DOM;
+ * it is only read to judge contrast, and only in the non-HC branch. */
+const CHIP_SHEET_FILL_HEX = "#f5f4f0";
 
 /** Luminance-based theme pick (same 0.55 threshold convention as the
  * pbiKpiCard v3 pilot, Plan 15) — decides whether the resolved background
@@ -100,6 +107,20 @@ export class Visual implements IVisual {
     // only, never the selection fill/border chrome (T-14-05/T-07-02).
     private chipTextColorHelper: ColorHelper | null = null;
     private resolvedChipTextColorHex: string = "#ffffff";
+
+    // NEXUS cycle-11 §7 (round 2). True when the report itself carries a
+    // chipTextColor object — i.e. the author opened the picker (or bound an
+    // fx rule to it). The review's correction line scopes this finding to the
+    // DEFAULT pair ("The sample uses explicit contrasting pairs; the default
+    // defect remains recorded"), so an explicit pick is never second-guessed:
+    // a saved report that set this colour renders exactly as it renders today.
+    private chipTextColorAuthored: boolean = false;
+
+    // The opaque colour a viewer actually sees behind the bar: the Background
+    // card's colour at its own transparency, over whatever the host theme
+    // paints behind the tile. Ink legibility is judged against this, never
+    // against the raw picker hex (NEXUS review 2026-09-11, class 1).
+    private resolvedRootSurfaceHex: string = "#ffffff";
 
     // Custom in-iframe Title element (TITLE-01, shared _shared/formatting/
     // v2 standard) — persistent div above the slicer row, hidden unless
@@ -263,6 +284,12 @@ export class Visual implements IVisual {
             );
             this.resolvedChipTextColorHex = this.chipTextColorHelper.getColorForMeasure(dv.metadata?.objects, "chipTextColor")
                 ?? chipFmt.chipTextColor.value.value;
+            // Did the report SET this ink, or is it still the declared default?
+            // dataView.metadata.objects is the same bag populateFormattingSettingsModel
+            // and getColorForMeasure both read, so its slicerBar.chipTextColor
+            // entry exists if and only if the author persisted one.
+            const chipTextObject = (dv.metadata?.objects as any)?.slicerBar?.chipTextColor;
+            this.chipTextColorAuthored = chipTextObject !== undefined && chipTextObject !== null;
 
             const parsed = parseDataView(dv);
 
@@ -482,6 +509,11 @@ export class Visual implements IVisual {
         const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
         const outerBgTransparencyPct = background.transparency.value ?? 0;
         this.target.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
+        // The bar row is transparent, so every chip painted below sits on THIS
+        // composited surface — the Background card over the host theme's
+        // background. Cached for legibleChipInk() (NEXUS cycle-11 §7).
+        this.resolvedRootSurfaceHex = compositeOver(
+            outerBgHex, outerBgTransparencyPct, this.colorPalette.background?.value || "#ffffff");
         this.slicerRow.style.background = "transparent";
         this.slicerRow.style.width = viewportWidth + "px";
 
@@ -629,6 +661,38 @@ export class Visual implements IVisual {
         }
     }
 
+    /**
+     * Selected Chip Text Colour, judged against the surface it is actually
+     * painted on.
+     *
+     * NEXUS cycle-11 §7 — "make the default foreground/background pair legible
+     * on both ring chips and filled dropdown items". The declared defaults pair
+     * Selected chip #00d9ff with Selected chip text #00d9ff (settings.ts)
+     * because v2 reads that pair as "ring + matching text" on the CHIP; the
+     * dropdown item paints the same colour as a real fill, so the label lands in
+     * its own fill's colour. Round 1 rescued only an EXACT collapse
+     * (ink === composited fill), which is the wrong test: legibility is a
+     * CONTRAST question. Measured on the round-1 bundle, a fill nudged one
+     * channel (#00d9ff ink on a #00d8fe fill) still scored 1.009:1, a fully
+     * transparent fill left cyan on the white panel at 1.698:1, and the ring
+     * chip on the default light background — which round 1 never touched at
+     * all — sat at 1.453:1.
+     *
+     * So: keep the declared default wherever it already clears WCAG 3:1 on the
+     * composited surface (the cyan-on-dark neon ring every dark report ships
+     * today measures 11.808:1 and is untouched), and only where it does not,
+     * fall back to contrastInk() against that same surface. An ink the AUTHOR
+     * set is returned unchanged either way — legible or not, it is theirs.
+     */
+    private legibleChipInk(surfaceHex: string): string {
+        const ink = String(this.resolvedChipTextColorHex ?? "");
+        if (this.chipTextColorAuthored || contrastRatio(ink, surfaceHex) >= 3) return ink;
+        // surfaceTokens("light").text is the ink for LIGHT surfaces (dark ink)
+        // and surfaceTokens("dark").text the ink for DARK ones, which is the
+        // (surface, darkInk, lightInk) order contrastInk expects.
+        return contrastInk(surfaceHex, surfaceTokens("light").text, surfaceTokens("dark").text);
+    }
+
     /* ─── Chips Section ─── */
 
     private renderChipsSection(section: SlicerSection, s: any): void {
@@ -680,8 +744,13 @@ export class Visual implements IVisual {
                         * (this.resolvedTheme === "dark" ? 1 : 0.55);
                     const mix = (pct: number) =>
                         `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
+                    const tintPct = Math.round(Math.min(100, glowPct * 0.12));
                     chip.style.background = mix(glowPct * 0.12);
-                    chip.style.color = this.resolvedChipTextColorHex;
+                    // The ring chip's visible surface is that faint accent tint
+                    // over the bar's own composited background — the "ring
+                    // chips" half of NEXUS cycle-11 §7.
+                    chip.style.color = this.legibleChipInk(compositeOver(
+                        this.resolvedChipColorHex, 100 - tintPct, this.resolvedRootSurfaceHex));
                     chip.style.borderColor = this.resolvedChipColorHex;
                     chip.style.boxShadow =
                         `0 0 14px ${mix(glowPct)}, ` +
@@ -703,7 +772,12 @@ export class Visual implements IVisual {
                         const litePct = 40 * (this.resolvedTheme === "dark" ? 1 : 0.55);
                         const liteMix = `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(litePct)}%, transparent)`;
                         chip.style.borderColor = this.resolvedChipColorHex;
-                        chip.style.color = this.resolvedChipTextColorHex;
+                        // No inline background is set in this branch, so the
+                        // neon-lite survivor keeps the stylesheet's own opaque
+                        // chip fill (style/visual.less `.osb-period-chip
+                        // { background: #f5f4f0 }`) — that, not the accent, is
+                        // the surface its ink has to be legible on (§7).
+                        chip.style.color = this.legibleChipInk(CHIP_SHEET_FILL_HEX);
                         chip.style.boxShadow = `0 0 8px ${liteMix}`;
                     } else {
                         chip.style.opacity = "0.35";
@@ -1207,20 +1281,14 @@ export class Visual implements IVisual {
         const hostBgHex = this.colorPalette.background?.value || "#ffffff";
         const panelSurfaceHex = compositeOver(outerBgHex, outerBgTransparencyPct, hostBgHex);
         const selectedSurfaceHex = compositeOver(this.resolvedChipColorHex, chipTransparencyPct, panelSurfaceHex);
-        // Selected chip and Selected chip text BOTH declare the same cyan
-        // (settings.ts chipColor/chipTextColor) because v2 reads that pair as
-        // "ring + matching text" on the chip. On the filled dropdown item the
-        // same pair paints the label in the fill's own colour — measured
-        // rgb(0,217,255) on rgb(0,217,255), i.e. no label at all. ONLY that
-        // vanishing case is re-inked, from the visible surface's tone; every
-        // pairing that is still distinguishable (every explicit override, and
-        // every transparency setting, which shifts the visible fill) keeps the
-        // picker's colour exactly as saved.
-        const resolvedInkHex = String(this.resolvedChipTextColorHex ?? "");
-        const inkVanishesIntoFill = resolvedInkHex.toLowerCase() === selectedSurfaceHex.toLowerCase();
-        const chipText = hc
-            ? bg
-            : (inkVanishesIntoFill ? surfaceTokens(surfaceTone(selectedSurfaceHex)).text : resolvedInkHex);
+        // Round 2: the round-1 test here was EXACT equality (ink === fill), and
+        // a pair one channel apart walked straight through it — measured
+        // rgb(0,217,255) on a #00d8fe fill at 1.009:1, and cyan on the white
+        // panel a fully transparent fill reveals at 1.698:1. legibleChipInk()
+        // asks the contrast question instead, on this same composited surface,
+        // and uses the identical rule the ring chips now use so the two
+        // surfaces agree.
+        const chipText = hc ? bg : this.legibleChipInk(selectedSurfaceHex);
         // Dropdown panel/trigger/search outlines follow the theme surface
         // token (same source as the count badges) — the old slicerBar
         // borderColor knob is retired; tile framing belongs to the shared
