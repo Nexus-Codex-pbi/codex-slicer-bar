@@ -342,8 +342,11 @@ export class Visual implements IVisual {
                 const sameTarget = cached && JSON.stringify(cached.filterTarget) === JSON.stringify(ps.filterTarget);
                 const cachedValues = new Set(cached?.items.map(item => item.rawValue));
                 const subset = sameTarget && ps.items.every(item => cachedValues.has(item.rawValue));
-                if (cached && subset) {
-                    nextCache.push({ ...ps, items: cached.items });
+                if (cached && subset && cached.items.length > ps.items.length) {
+                    const fresh = new Map(ps.items.map(item => [item.rawValue, item]));
+                    const items = cached.items.map(item => fresh.get(item.rawValue) || item)
+                        .sort((a, b) => a.sort - b.sort);
+                    nextCache.push({ ...ps, items, sectionSort: Math.min(...items.map(item => item.sort)) });
                 } else {
                     nextCache.push(ps);
                     const selected = this.selections.get(ps.name);

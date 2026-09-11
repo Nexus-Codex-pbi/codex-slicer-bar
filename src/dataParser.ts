@@ -125,6 +125,8 @@ export function parseDataView(dataView: DataView, locale?: string): SlicerSectio
     const displayModeIdx = roleToCatIdx["displayMode"];
     const selectionModeIdx = roleToCatIdx["selectionMode"];
     const sortIdx = roleToCatIdx["sortOrder"];
+    const sortColumn = sortIdx !== undefined ? categories[sortIdx]
+        : cat.values?.find(column => column.source.roles?.sortOrder);
 
     // Single-field simple mode (Neil live-QA 2026-07-16): when only ONE of
     // Category/Label is bound, that column supplies the item labels and the
@@ -157,7 +159,7 @@ export function parseDataView(dataView: DataView, locale?: string): SlicerSectio
             value: valueIdx !== undefined ? String(categories[valueIdx].values[r] ?? "") : "",
             shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] ?? "") : "",
             defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] ?? "") : "",
-            sortOrder: sortIdx !== undefined ? Number(categories[sortIdx].values[r]) || 0 : 0,
+            sortOrder: sortColumn ? Number(sortColumn.values[r]) || 0 : 0,
             displayMode: displayModeIdx !== undefined ? String(categories[displayModeIdx].values[r] || "").toLowerCase() : "",
             selectionMode: selectionModeIdx !== undefined ? String(categories[selectionModeIdx].values[r] || "").toLowerCase() : "",
         });
