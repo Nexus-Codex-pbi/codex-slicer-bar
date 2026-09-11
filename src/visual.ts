@@ -58,6 +58,8 @@ interface BasicFilter extends IFilter {
 }
 
 export class Visual implements IVisual {
+    private static instanceCount = 0;
+    private instanceId = ++Visual.instanceCount;
     private target: HTMLElement;
     private host: IVisualHost;
     private events: IVisualEventService;
@@ -98,6 +100,7 @@ export class Visual implements IVisual {
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
     private contextMenuHandler: (e: MouseEvent) => void;
+    private documentKeyHandler: (e: KeyboardEvent) => void;
     private destroyed = false;
 
     // State for the Selected Chip Colour fx wiring (TRANS-04) — this
@@ -210,6 +213,13 @@ export class Visual implements IVisual {
             }
         };
         document.addEventListener("click", this.documentClickHandler);
+        this.documentKeyHandler = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && this.activePanel) {
+                e.preventDefault();
+                this.closeAllDropdowns(true);
+            }
+        };
+        document.addEventListener("keydown", this.documentKeyHandler);
 
         // Context menu — right-click shows PBI context menu
         this.contextMenuHandler = (e: MouseEvent) => {
@@ -475,6 +485,9 @@ export class Visual implements IVisual {
      * ═══════════════════════════════════════ */
 
     private renderSlicerBar(viewportWidth: number): void {
+        const focusKey = (document.activeElement as HTMLElement)?.dataset?.focusKey
+            || (this.activePanel?.contains(document.activeElement)
+                ? JSON.stringify(["dropdown", this.openDropdownId]) : undefined);
         this.closeAllDropdowns();
         const s = this.formattingSettings.slicerBarCard;
         const hc = this.isHighContrast;
@@ -663,6 +676,7 @@ export class Visual implements IVisual {
 
             const clearAllBtn = document.createElement("button");
             clearAllBtn.className = "osb-clear-all";
+            clearAllBtn.dataset.focusKey = "clear-all";
             clearAllBtn.textContent = "✕ " + this.localizationManager.getDisplayName("Clear_All");
             clearAllBtn.style.color = hc ? fg : surf.muted;
             clearAllBtn.addEventListener("click", (e: MouseEvent) => {
@@ -691,6 +705,10 @@ export class Visual implements IVisual {
             error.textContent = "Filter could not be applied.";
             error.style.color = hc ? fg : contrastInk(this.resolvedRootSurfaceHex, "#000000", "#ffffff");
             this.slicerRow.appendChild(error);
+        }
+        if (focusKey) {
+            Array.from(this.target.querySelectorAll<HTMLElement>("[data-focus-key]"))
+                .find(element => element.dataset.focusKey === focusKey)?.focus();
         }
     }
 
@@ -757,6 +775,8 @@ export class Visual implements IVisual {
         for (const item of visible) {
             const chip = document.createElement("button");
             chip.className = "osb-period-chip";
+            chip.dataset.focusKey = JSON.stringify(["chip", section.name, item.rawValue]);
+            chip.setAttribute("aria-pressed", String(sel.has(item.rawValue)));
             chip.textContent = item.label;
             // Chip text treatment (TEXT-01) — bold-off falls back to the
             // chip's own pre-existing hardcoded weight 500. Applies to
@@ -859,6 +879,7 @@ export class Visual implements IVisual {
                 this.onChipClick(section, item.rawValue);
             });
             chip.addEventListener("keydown", (e: KeyboardEvent) => {
+                this.navigateOptions(e, Array.from(this.slicerRow.querySelectorAll<HTMLElement>(".osb-period-chip")));
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     this.onChipClick(section, item.rawValue);
@@ -873,7 +894,10 @@ export class Visual implements IVisual {
                 `+${overflow.length} more`,
                 `${section.name}_overflow`,
                 (panel: HTMLElement) => {
-                    this.buildDropdownItems(panel, section, overflow);
+                    const items = document.createElement("div");
+                    items.className = "osb-panel-items";
+                    this.buildDropdownItems(items, section, overflow);
+                    panel.appendChild(items);
                 }
             );
             this.slicerRow.appendChild(group);
@@ -1024,10 +1048,15 @@ export class Visual implements IVisual {
         // composite; bold-off falls back to the item's own pre-existing
         // hardcoded weight 600.
         const s = this.formattingSettings.slicerBarCard;
+        container.setAttribute("role", section.selectionMode === "single" ? "listbox" : "group");
+        container.setAttribute("aria-label", section.name);
         if (section.selectionMode === "single") {
             for (const item of renderItems) {
-                const el = document.createElement("div");
+                const el = document.createElement("button");
+                el.type = "button";
                 el.className = "osb-dropdown-item";
+                el.setAttribute("role", "option");
+                el.setAttribute("aria-selected", String(sel.has(item.rawValue)));
                 if (sel.has(item.rawValue)) el.classList.add("selected");
                 el.textContent = item.label;
                 this.applyChipFont(el, s, "600");
@@ -1053,6 +1082,7 @@ export class Visual implements IVisual {
             for (const item of renderItems) {
                 const label = document.createElement("label");
                 label.className = "osb-dropdown-item osb-checkbox-item";
+                if (sel.has(item.rawValue)) label.classList.add("selected");
                 this.applyChipFont(label, s, "600");
 
                 const cb = document.createElement("input");
@@ -1191,6 +1221,11 @@ export class Visual implements IVisual {
 
         const trigger = document.createElement("button");
         trigger.className = "osb-dropdown-trigger";
+        trigger.dataset.focusKey = JSON.stringify(["dropdown", id]);
+        trigger.dataset.dropdownId = id;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.setAttribute("aria-haspopup", "dialog");
+        trigger.setAttribute("aria-controls", `osb-panel-${this.instanceId}`);
         trigger.textContent = label;
         // Trigger label text treatment (TEXT-01) — same chip font
         // composite; bold-off falls back to the trigger's pre-existing
@@ -1206,10 +1241,14 @@ export class Visual implements IVisual {
             this.closeAllDropdowns();
             this.openDropdownId = id;
             trigger.classList.add("open");
+            trigger.setAttribute("aria-expanded", "true");
 
             // Create fixed-position panel attached to document body
             const panel = document.createElement("div");
             panel.className = "osb-fixed-panel";
+            panel.id = `osb-panel-${this.instanceId}`;
+            panel.setAttribute("role", "dialog");
+            panel.setAttribute("aria-label", label);
             this.activePanel = panel;
 
             // Build content
@@ -1224,6 +1263,13 @@ export class Visual implements IVisual {
             const dir = String(this.formattingSettings.slicerBarCard.fanDirection.value.value || "auto");
 
             this.positionPanel(panel, triggerRect, dir);
+            panel.addEventListener("keydown", (event: KeyboardEvent) => {
+                this.navigateOptions(event, Array.from(panel.querySelectorAll<HTMLElement>(
+                    "button.osb-dropdown-item,input[type=checkbox]")));
+            });
+            if (e.detail === 0) {
+                panel.querySelector<HTMLElement>(".osb-panel-search,button.osb-dropdown-item,input[type=checkbox]")?.focus();
+            }
 
             // Stop clicks inside panel from closing it
             panel.addEventListener("click", (ev) => ev.stopPropagation());
@@ -1302,16 +1348,31 @@ export class Visual implements IVisual {
         panel.style.visibility = "visible";
     }
 
-    private closeAllDropdowns(): void {
+    private navigateOptions(event: KeyboardEvent, options: HTMLElement[]): void {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || !options.length) return;
+        event.preventDefault();
+        const index = options.indexOf(document.activeElement as HTMLElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+            : (index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + options.length) % options.length;
+        options[next].focus();
+    }
+
+    private closeAllDropdowns(restoreFocus = false): void {
+        const trigger = Array.from(this.target.querySelectorAll<HTMLElement>(".osb-dropdown-trigger"))
+            .find(element => element.dataset.dropdownId === this.openDropdownId);
         // Remove fixed panel from body
         if (this.activePanel) {
             this.activePanel.remove();
             this.activePanel = null;
         }
         this.target.querySelectorAll(".osb-dropdown-trigger.open").forEach(
-            (t) => t.classList.remove("open")
+            (t) => {
+                t.classList.remove("open");
+                t.setAttribute("aria-expanded", "false");
+            }
         );
         this.openDropdownId = "";
+        if (restoreFocus) trigger?.focus();
     }
 
     /* ═══════════════════════════════════════
@@ -1446,6 +1507,7 @@ export class Visual implements IVisual {
         this.destroyed = true;
         this.closeAllDropdowns();
         document.removeEventListener("click", this.documentClickHandler);
+        document.removeEventListener("keydown", this.documentKeyHandler);
         this.target.removeEventListener("contextmenu", this.contextMenuHandler);
         if (this.activePanel) {
             this.activePanel.remove();
