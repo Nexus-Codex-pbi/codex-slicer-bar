@@ -88,6 +88,10 @@ export class Visual implements IVisual {
     // Skip PBI-triggered re-render after we apply our own filters
     private selfFilterPending: boolean = false;
     private initialised: boolean = false;
+    private lastJsonFilters: unknown;
+    private externalConstraints: BasicFilter[] = [];
+    private acceptedSelections: Map<string, Set<string>> = new Map();
+    private filterError = false;
 
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
@@ -363,9 +367,8 @@ export class Visual implements IVisual {
             // Apply formatting panel defaults where data doesn't specify
             this.applyFormattingDefaults();
 
-            if (this.selfFilterPending) {
+            {
                 this.selfFilterPending = false;
-            } else {
                 // Read filters on every update to respond to cross-filtering from other visuals
                 this.readAppliedFilters(options);
 
@@ -647,6 +650,14 @@ export class Visual implements IVisual {
             totalEl.style.fontFeatureSettings = TABULAR_NUMS;
             totalEl.style.color = hc ? fg : surf.muted;
             this.slicerRow.appendChild(totalEl);
+        }
+        if (this.filterError) {
+            const error = document.createElement("span");
+            error.className = "osb-filter-error";
+            error.setAttribute("role", "status");
+            error.textContent = "Filter could not be applied.";
+            error.style.color = hc ? fg : contrastInk(this.resolvedRootSurfaceHex, "#000000", "#ffffff");
+            this.slicerRow.appendChild(error);
         }
     }
 
@@ -1054,7 +1065,7 @@ export class Visual implements IVisual {
         // definitively unlicensed visual emits no filter. Belt to onChipClick's
         // braces, because search, clear-all and dropdown items land here too.
         if (this.licenseGate.blocked) return;
-        const filters: BasicFilter[] = [];
+        const filters: BasicFilter[] = [...this.externalConstraints];
         for (const section of this.sections) {
             if (!section.filterTarget) continue;
             const sel = this.selections.get(section.name);
@@ -1076,8 +1087,12 @@ export class Visual implements IVisual {
             } else {
                 (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
             }
+            this.acceptedSelections = new Map([...this.selections].map(([name, values]) => [name, new Set(values)]));
+            this.filterError = false;
         } catch {
-            // Filter apply failed — ignore silently
+            this.selections = new Map([...this.acceptedSelections].map(([name, values]) => [name, new Set(values)]));
+            this.selfFilterPending = false;
+            this.filterError = true;
         }
     }
 
@@ -1088,7 +1103,14 @@ export class Visual implements IVisual {
 
     private readAppliedFilters(options: VisualUpdateOptions): void {
         try {
-            const jsonFilters = (options as any).jsonFilters || [];
+            const jsonFilters = (options as any).jsonFilters;
+            // A licence redraw reuses the last payload; it is not a host restore.
+            // An explicitly delivered empty array, even immediately after a click,
+            // is a complete reset and must not be swallowed as a self-filter echo.
+            if (!Array.isArray(jsonFilters) || jsonFilters === this.lastJsonFilters) return;
+            this.lastJsonFilters = jsonFilters;
+            this.selections.clear();
+            this.externalConstraints = [];
             const targetToSection = new Map<string, string>();
             for (const section of this.sections) {
                 if (section.filterTarget) {
@@ -1102,9 +1124,15 @@ export class Visual implements IVisual {
                 const key = `${f.target.table || ""}.${f.target.column || ""}`;
                 const sectionName = targetToSection.get(key);
                 if (sectionName) {
-                    this.selections.set(sectionName, new Set(f.values || []));
+                    if (f.filterType === 1 && f.operator === "In" && Array.isArray(f.values)) {
+                        this.selections.set(sectionName, new Set(f.values));
+                    } else {
+                        this.externalConstraints.push(f);
+                    }
                 }
             }
+            this.acceptedSelections = new Map([...this.selections].map(([name, values]) => [name, new Set(values)]));
+            this.filterError = false;
         } catch {
             // Ignore filter read errors
         }
@@ -1390,6 +1418,9 @@ export class Visual implements IVisual {
         this.cachedSections = null;
         this.selections.clear();
         this.externalAvail.clear();
+        this.acceptedSelections.clear();
+        this.externalConstraints = [];
+        this.lastJsonFilters = undefined;
         this.target.replaceChildren();
     }
 }
