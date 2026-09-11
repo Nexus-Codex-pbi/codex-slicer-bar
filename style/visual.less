@@ -329,3 +329,12 @@
     font-size: 11px;
     flex-shrink: 0;
 }
+
+@media (prefers-reduced-motion: reduce) {
+    .osb-period-chip,
+    .osb-dropdown-trigger,
+    .osb-dropdown-item,
+    .osb-clear-all {
+        transition: none;
+    }
+}

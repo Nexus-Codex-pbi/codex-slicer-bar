@@ -27,6 +27,7 @@ import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature"
 import { applyCardSignature } from "./shared/cardSignatureSettings";
 import { applyBorder } from "./shared/borderSettings";
 import { LicenseGate } from "./shared/licensing";
+import { settle } from "./shared/motion";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
@@ -1375,6 +1376,17 @@ export class Visual implements IVisual {
         panel.style.left = left + "px";
 
         panel.style.visibility = "visible";
+        const startClip = resolvedDir === "left" ? "inset(0 0 0 100%)"
+            : resolvedDir === "up" ? "inset(100% 0 0 0)"
+            : resolvedDir === "down" ? "inset(0 0 100% 0)" : "inset(0 100% 0 0)";
+        const animation = settle(panel, [
+            { clipPath: startClip, opacity: 0.25 },
+            { clipPath: "inset(0 0 0 0)", opacity: 1 },
+        ], { duration: 180 });
+        if (animation) animation.onfinish = () => {
+            animation.cancel();
+            animation.onfinish = null;
+        };
     }
 
     private navigateOptions(event: KeyboardEvent, options: HTMLElement[]): void {
@@ -1391,6 +1403,7 @@ export class Visual implements IVisual {
             .find(element => element.dataset.dropdownId === this.openDropdownId);
         // Remove fixed panel from body
         if (this.activePanel) {
+            this.activePanel.getAnimations().forEach(animation => animation.cancel());
             this.activePanel.remove();
             this.activePanel = null;
         }
