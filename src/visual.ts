@@ -19,7 +19,7 @@ import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
-import { toRgba, compositeOver, contrastInk, contrastRatio } from "./shared/colorHelpers";
+import { toRgba, compositeOver, contrastInk, contrastRatio, mutedInk } from "./shared/colorHelpers";
 import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
@@ -126,6 +126,9 @@ export class Visual implements IVisual {
     // defect remains recorded"), so an explicit pick is never second-guessed:
     // a saved report that set this colour renders exactly as it renders today.
     private chipTextColorAuthored: boolean = false;
+    private labelColorAuthored = false;
+    private titleColorAuthored = false;
+    private resolvedLabelColorHex = "#5e5d5a";
 
     // The opaque colour a viewer actually sees behind the bar: the Background
     // card's colour at its own transparency, over whatever the host theme
@@ -311,6 +314,8 @@ export class Visual implements IVisual {
             // entry exists if and only if the author persisted one.
             const chipTextObject = (dv.metadata?.objects as any)?.slicerBar?.chipTextColor;
             this.chipTextColorAuthored = chipTextObject !== undefined && chipTextObject !== null;
+            this.labelColorAuthored = (dv.metadata?.objects as any)?.slicerBar?.labelColor != null;
+            this.titleColorAuthored = (dv.metadata?.objects as any)?.titleSettings?.titleColor != null;
 
             const parsed = parseDataView(dv);
             if (!parsed.length) {
@@ -493,6 +498,16 @@ export class Visual implements IVisual {
         const hc = this.isHighContrast;
         const fg = hc ? this.colorPalette.foreground.value : "";
         const bg = hc ? this.colorPalette.background.value : "";
+        const background = this.formattingSettings.background;
+        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
+        const outerBgTransparencyPct = background.transparency.value ?? 0;
+        this.resolvedRootSurfaceHex = compositeOver(
+            outerBgHex, outerBgTransparencyPct, this.colorPalette.background?.value || "#ffffff");
+        const rootInk = this.defaultInk(this.resolvedRootSurfaceHex);
+        const secondaryInk = mutedInk(rootInk, this.resolvedRootSurfaceHex);
+        this.resolvedLabelColorHex = this.labelColorAuthored ? s.labelColor.value.value
+            : this.defaultInk(this.resolvedRootSurfaceHex, s.labelColor.value.value);
+        this.target.style.color = hc ? fg : rootInk;
         const maxSections = s.maxVisibleSections.value || 10;
         let sectionCount = 0;
 
@@ -519,9 +534,8 @@ export class Visual implements IVisual {
             // swaps to the dark text token on dark surfaces (theme keyed off
             // the shared Background card, same source as the v3 theme pick below).
             const setTitle = titleFmt.titleColor?.value?.value || "#1a1a2e";
-            const adaptiveTitle = setTitle === "#1a1a2e"
-                && themeFor(this.formattingSettings.background.backgroundColor.value?.value ?? "#ffffff") === "dark"
-                ? surfaceTokens("dark").text : setTitle;
+            const adaptiveTitle = this.titleColorAuthored ? setTitle
+                : this.defaultInk(this.resolvedRootSurfaceHex, setTitle);
             this.titleEl.style.color = hc ? fg : adaptiveTitle;
             this.titleEl.style.display = "";
             if (titleInline) {
@@ -558,15 +572,10 @@ export class Visual implements IVisual {
         // the host tile visible above/below the bar = "multiple backgrounds".
         // Paint the full-height ROOT instead and keep the bar row transparent,
         // so a single background fills the tile.
-        const background = this.formattingSettings.background;
-        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
-        const outerBgTransparencyPct = background.transparency.value ?? 0;
         this.target.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         // The bar row is transparent, so every chip painted below sits on THIS
         // composited surface — the Background card over the host theme's
         // background. Cached for legibleChipInk() (NEXUS cycle-11 §7).
-        this.resolvedRootSurfaceHex = compositeOver(
-            outerBgHex, outerBgTransparencyPct, this.colorPalette.background?.value || "#ffffff");
         this.slicerRow.style.background = "transparent";
         this.slicerRow.style.width = "100%";
 
@@ -574,13 +583,15 @@ export class Visual implements IVisual {
         // the magenta clear-all hover via custom properties (visual.less);
         // per-instance "selected" chip colour is still resolved through the
         // existing fx-wired pickers below (D-16).
-        const theme: Theme = themeFor(outerBgHex);
+        const theme: Theme = themeFor(this.resolvedRootSurfaceHex);
         this.resolvedTheme = theme;
         const surf = surfaceTokens(theme);
         const accentHex = accentToken(theme);
         const dangerHex = bandColor("danger", theme);
         this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
+        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(CHIP_SHEET_FILL_HEX, accentHex));
+        this.slicerRow.style.setProperty("--osb-separator", hc ? fg : surf.border);
 
         // ─── Suite chrome: Border card + Corner Accents on the full-tile root.
         // (The shared modules were vendored earlier as "source only — rebuild
@@ -629,7 +640,7 @@ export class Visual implements IVisual {
             const label = document.createElement("span");
             label.className = "osb-slicer-label";
             label.textContent = section.name.toUpperCase() + ":";
-            label.style.color = hc ? fg : s.labelColor.value.value;
+            label.style.color = hc ? fg : this.resolvedLabelColorHex;
             label.style.fontSize = s.labelFontSize.value + "px";
             // Section label text treatment (TEXT-01) — bold-off falls back
             // to the surface's own pre-existing hardcoded weight 600.
@@ -648,9 +659,10 @@ export class Visual implements IVisual {
                 countBadge.className = "osb-chip-count";
                 countBadge.textContent = String(groupSel.size);
                 countBadge.style.fontFeatureSettings = TABULAR_NUMS;
-                countBadge.style.color = hc ? fg : (groupSel.size > 0 ? accentHex : surf.muted);
+                countBadge.style.color = hc ? fg : (groupSel.size > 0
+                    ? this.defaultInk(this.resolvedRootSurfaceHex, accentHex) : secondaryInk);
                 countBadge.style.borderColor = hc ? fg : surf.border;
-                countBadge.style.opacity = groupSel.size > 0 ? "1" : "0.35";
+                countBadge.style.opacity = "1";
                 this.slicerRow.appendChild(countBadge);
             }
 
@@ -678,7 +690,7 @@ export class Visual implements IVisual {
             clearAllBtn.className = "osb-clear-all";
             clearAllBtn.dataset.focusKey = "clear-all";
             clearAllBtn.textContent = "✕ " + this.localizationManager.getDisplayName("Clear_All");
-            clearAllBtn.style.color = hc ? fg : surf.muted;
+            clearAllBtn.style.color = hc ? fg : secondaryInk;
             clearAllBtn.addEventListener("click", (e: MouseEvent) => {
                 e.stopPropagation();
                 for (const clearSection of this.sections) {
@@ -695,7 +707,7 @@ export class Visual implements IVisual {
             totalEl.className = "osb-total-active";
             totalEl.textContent = `${totalActive} active`;
             totalEl.style.fontFeatureSettings = TABULAR_NUMS;
-            totalEl.style.color = hc ? fg : surf.muted;
+            totalEl.style.color = hc ? fg : secondaryInk;
             this.slicerRow.appendChild(totalEl);
         }
         if (this.filterError) {
@@ -721,7 +733,7 @@ export class Visual implements IVisual {
             const staticText = document.createElement("span");
             staticText.className = "osb-static-value";
             staticText.textContent = item.value || item.label;
-            staticText.style.color = hc ? fg : s.labelColor.value.value;
+            staticText.style.color = hc ? fg : this.resolvedLabelColorHex;
             staticText.style.fontSize = s.labelFontSize.value + "px";
             this.slicerRow.appendChild(staticText);
         }
@@ -830,6 +842,11 @@ export class Visual implements IVisual {
                     chip.style.fontWeight = "700";
                 }
             } else {
+                if (hc) {
+                    chip.style.background = bg;
+                    chip.style.color = fg;
+                    chip.style.borderColor = fg;
+                }
                 // Unselected chip under an active EXTERNAL cross-filter
                 // (another visual narrowed this section): survivors get a
                 // neon-lite ring (~40% of the selected glow), filtered-out
@@ -975,6 +992,7 @@ export class Visual implements IVisual {
                     searchInput.addEventListener("click", (e) => e.stopPropagation());
                     searchInput.addEventListener("input", () => {
                         this.buildDropdownItems(itemsContainer, section, null, searchInput.value);
+                        this.applyPanelColors(panel);
                     });
                     panel.appendChild(searchInput);
                 }
@@ -1025,7 +1043,8 @@ export class Visual implements IVisual {
             const subtitle = document.createElement("span");
             subtitle.className = "osb-short-label";
             subtitle.textContent = shortLabelText;
-            subtitle.style.color = hc ? fg : s.labelColor.value.value;
+            subtitle.style.color = hc ? fg : this.resolvedLabelColorHex;
+            subtitle.style.opacity = "1";
             subtitle.style.fontSize = (s.labelFontSize.value - 1) + "px";
             this.slicerRow.appendChild(subtitle);
         }
@@ -1229,6 +1248,9 @@ export class Visual implements IVisual {
         trigger.setAttribute("aria-haspopup", "dialog");
         trigger.setAttribute("aria-controls", `osb-panel-${this.instanceId}`);
         trigger.textContent = label;
+        trigger.style.color = this.isHighContrast ? this.colorPalette.foreground.value : this.resolvedLabelColorHex;
+        trigger.style.background = this.isHighContrast ? this.colorPalette.background.value : "transparent";
+        trigger.style.borderColor = this.isHighContrast ? this.colorPalette.foreground.value : surfaceTokens(this.resolvedTheme).border;
         // Trigger label text treatment (TEXT-01) — same chip font
         // composite; bold-off falls back to the trigger's pre-existing
         // default weight 400 (no hardcoded font-weight in CSS).
@@ -1382,7 +1404,7 @@ export class Visual implements IVisual {
      * PANEL COLOUR APPLICATION
      * ═══════════════════════════════════════ */
 
-    private applyPanelColors(panel: HTMLElement, trigger: HTMLElement): void {
+    private applyPanelColors(panel: HTMLElement, trigger?: HTMLElement): void {
         const s = this.formattingSettings.slicerBarCard;
         const hc = this.isHighContrast;
         const fg = hc ? this.colorPalette.foreground.value : "";
@@ -1431,24 +1453,35 @@ export class Visual implements IVisual {
         // Border card alone (Neil live-QA 2026-07-16, duplicate-knob cull).
         const borderClr = hc ? fg : surfaceTokens(this.resolvedTheme).border;
         const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
-        const labelClr = hc ? fg : s.labelColor.value.value;
+        const labelClr = hc ? fg : this.resolvedLabelColorHex;
         const itemBg = hc ? bg : "#ffffff";
         const itemText = hc ? fg : "#1a1a1a";
-        const hoverBg = hc ? bg : (outerBgHex === "#ffffff" ? "#f0eef8" : toRgba(outerBgHex, outerBgTransparencyPct));
+        const hoverBg = hc ? bg : (this.resolvedTheme === "light" ? "#f0eef8" : panelSurfaceHex);
+        const hoverInk = hc ? fg : this.defaultInk(hoverBg, chipBg);
 
         panel.style.background = bgClr;
         panel.style.borderColor = borderClr;
+        panel.style.setProperty("--codex-accent", hc ? fgSelected : chipBg);
+        panel.style.setProperty("--osb-panel-ink", hc ? fg : this.defaultInk(panelSurfaceHex));
+        panel.style.setProperty("--osb-panel-hover", hoverBg);
 
-        trigger.style.borderColor = borderClr;
-        trigger.style.background = bgClr;
-        trigger.style.color = labelClr;
+        if (trigger) {
+            trigger.style.borderColor = borderClr;
+            trigger.style.background = hc ? bg : "transparent";
+            trigger.style.color = labelClr;
+        }
 
         panel.querySelectorAll(".osb-panel-action-btn").forEach((btn: HTMLElement) => {
-            btn.style.color = chipBg;
+            btn.style.color = hc ? fg : this.defaultInk(panelSurfaceHex, chipBg);
         });
 
         panel.querySelectorAll(".osb-panel-search").forEach((inp: HTMLElement) => {
             inp.style.borderColor = borderClr;
+            inp.style.background = hc ? bg : panelSurfaceHex;
+            inp.style.color = hc ? fg : this.defaultInk(panelSurfaceHex);
+        });
+        panel.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(input => {
+            input.style.accentColor = hc ? fgSelected : chipBg;
         });
 
         panel.querySelectorAll(".osb-dropdown-item").forEach((item: HTMLElement) => {
@@ -1466,7 +1499,7 @@ export class Visual implements IVisual {
             item.addEventListener("mouseenter", () => {
                 if (!item.classList.contains("selected")) {
                     item.style.borderColor = chipBg;
-                    item.style.color = chipBg;
+                    item.style.color = hoverInk;
                     item.style.background = hoverBg;
                 }
             });
@@ -1489,6 +1522,12 @@ export class Visual implements IVisual {
      *  saved reports render pixel-identical at the new property defaults. */
     private weightFor(bold: boolean | undefined, restWeight: string): string {
         return bold ? "700" : restWeight;
+    }
+
+    private defaultInk(surface: string, preferred?: string): string {
+        if (preferred && contrastRatio(preferred, surface) >= 4.5) return preferred;
+        const ink = contrastInk(surface, surfaceTokens("light").text, surfaceTokens("dark").text);
+        return contrastRatio(ink, surface) >= 4.5 ? ink : contrastInk(surface, "#000000", "#ffffff");
     }
 
     /** Apply the shared chip font composite (family/size/bold/italic/

@@ -53,7 +53,7 @@
 .osb-slicer-sep {
     width: 1px;
     height: 14px;
-    background: #e8e2d3;
+    background: var(--osb-separator, #e8e2d3);
     flex-shrink: 0;
     margin: 0 2px;
 }
@@ -82,7 +82,7 @@
        hardcoded purple. */
     &:hover {
         border-color: var(--codex-accent, #00d9ff);
-        color: var(--codex-accent, #00d9ff);
+        color: var(--osb-chip-hover-ink, #1a1a1a);
     }
 
     &:focus-visible {
@@ -118,20 +118,19 @@
     &::after {
         content: "\25B8"; /* ▸ */
         font-size: 9px;
-        color: #5e5d5a;
+        color: currentColor;
     }
 
     &.open {
-        border-color: #130064;
-        background: #f0eef8;
+        border-color: var(--codex-accent, #130064);
     }
 
     &:hover {
-        border-color: #130064;
+        border-color: var(--codex-accent, #130064);
     }
 
     &:focus-visible {
-        outline: 2px solid #130064;
+        outline: 2px solid var(--codex-accent, #130064);
         outline-offset: 1px;
     }
 }
@@ -179,7 +178,11 @@
     width: 90px;
 
     &:focus {
-        border-color: #130064;
+        outline: 2px solid var(--codex-accent, #130064);
+    }
+    &::placeholder {
+        color: var(--osb-panel-ink, #1a1a1a);
+        opacity: 1;
     }
 }
 
@@ -201,7 +204,7 @@
     border-radius: 10px;
 
     &:hover {
-        background: #f0eee6;
+        background: var(--osb-panel-hover, #f0eee6);
     }
 }
 
@@ -231,6 +234,12 @@
     transition: all 0.12s;
     line-height: 1.4;
     flex-shrink: 0;
+    font-family: inherit;
+
+    &:focus-visible {
+        outline: 2px solid var(--codex-accent, #130064);
+        outline-offset: 1px;
+    }
 
     &:hover {
         border-color: #130064;
