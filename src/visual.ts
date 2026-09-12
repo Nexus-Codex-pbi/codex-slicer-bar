@@ -24,7 +24,7 @@ import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataPar
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 import {
-    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme, flareHexFor,
+    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme, flareHexFor, forcedInk,
 } from "./shared/codexThemeSettings";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
@@ -38,8 +38,9 @@ const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
 /** The stylesheet's own unselected-chip fill — a MIRROR of
  * `style/visual.less` `.osb-period-chip { background: #f5f4f0 }`, not a new
  * colour: the neon-lite branch sets no inline background, so this is the
- * surface its ink is painted on (NEXUS cycle-11 §7). Never reaches the DOM;
- * it is only read to judge contrast, and only in the non-HC branch. */
+ * surface its ink is painted on (NEXUS cycle-11 §7). Under Auto it never
+ * reaches the DOM; a FORCED mode replaces it with the mode's track token and
+ * paints that inline (#819 rule 2 — see resolvedChipChromeFill). */
 const CHIP_SHEET_FILL_HEX = "#f5f4f0";
 
 /** Luminance-based theme pick (same 0.55 threshold convention as the
@@ -115,6 +116,12 @@ export class Visual implements IVisual {
     // the per-instance categorical pattern.
     private chipColorHelper: ColorHelper | null = null;
     private resolvedChipColorHex: string = "#130064";
+    // #819 rule 1 — the selected-chip colour is an ACCENT (a selection mark),
+    // so the Neon flare re-tints it. UNLESS a conditional-formatting rule
+    // produced it: then its hue carries a value and is DATA, exempt from the
+    // flare. Same test Time Breakdown uses for `totalIsFx` — the resolved
+    // colour differs from the static pane value only when a rule resolved it.
+    private chipColorIsFx = false;
 
     // State for the Selected Chip TEXT Colour fx wiring (TEXT-02) — same
     // global/measure-level shape as chipColorHelper above (this visual has
@@ -122,6 +129,9 @@ export class Visual implements IVisual {
     // only, never the selection fill/border chrome (T-14-05/T-07-02).
     private chipTextColorHelper: ColorHelper | null = null;
     private resolvedChipTextColorHex: string = "#ffffff";
+    // #819 rule 3 — an fx-resolved ink is data and is exempt from the forced-
+    // mode override entirely (same `!totalIsFx` test as chipColorIsFx above).
+    private chipTextIsFx = false;
 
     // NEXUS cycle-11 §7 (round 2). True when the report itself carries a
     // chipTextColor object — i.e. the author opened the picker (or bound an
@@ -150,6 +160,10 @@ export class Visual implements IVisual {
     // Theme resolved from the shared Background card each render — chip and
     // dropdown renderers key surface tokens + glow strength off it.
     private resolvedTheme: Theme = "light";
+    // The surface an UNSELECTED chip is painted on (#819 rule 2). Auto keeps
+    // the stylesheet's own light chrome fill; a forced mode re-tones it to that
+    // mode's track token and paints it inline. Chip inks are judged against it.
+    private resolvedChipChromeFill: string = CHIP_SHEET_FILL_HEX;
     // Nexus Codex Theme (#819) — resolved ONCE per render in renderSlicerBar()
     // and routed from there into the chip / dropdown / panel renderers, so the
     // bar and its fan-out panel can never disagree about the mode. The field
@@ -305,6 +319,8 @@ export class Visual implements IVisual {
             );
             this.resolvedChipColorHex = this.chipColorHelper.getColorForMeasure(dv.metadata?.objects, "chipColor")
                 ?? chipFmt.chipColor.value.value;
+            // A rule resolved it iff it differs from the static pane value.
+            this.chipColorIsFx = this.resolvedChipColorHex !== chipFmt.chipColor.value.value;
 
             // ─── fx wiring — Selected Chip Text Colour (TEXT-02) ────────
             // Same global/measure-level pattern as chipColor above:
@@ -324,6 +340,7 @@ export class Visual implements IVisual {
             );
             this.resolvedChipTextColorHex = this.chipTextColorHelper.getColorForMeasure(dv.metadata?.objects, "chipTextColor")
                 ?? chipFmt.chipTextColor.value.value;
+            this.chipTextIsFx = this.resolvedChipTextColorHex !== chipFmt.chipTextColor.value.value;
             // Did the report SET this ink, or is it still the declared default?
             // dataView.metadata.objects is the same bag populateFormattingSettingsModel
             // and getColorForMeasure both read, so its slicerBar.chipTextColor
@@ -535,15 +552,18 @@ export class Visual implements IVisual {
             autoTransparencyPct: outerBgTransparencyPct, behindHex,
         });
         this.resolvedCodex = codex;
-        // A forced mode OWNS the text inks against its own composited surface:
-        // a label/title colour chosen for a white bar is not a choice about the
-        // Codex dark surface. The chip/band/fx colours stay the user's.
-        const inkOverride = codex.mode !== "auto";
+        // #819 rule 3 — a forced mode GUARDS the text inks against its own
+        // composited surface rather than replacing them: an explicit label/title
+        // colour survives if it still reads 4.5:1 there, otherwise the mode's
+        // default ink takes over. `forcedInk` is the one suite rule; the mode
+        // default handed to it stays `defaultInk(surface, userValue)` so Auto is
+        // byte-identical. The chip/band/fx colours stay the user's.
         this.resolvedRootSurfaceHex = codex.surfaceHex;
         const rootInk = this.defaultInk(this.resolvedRootSurfaceHex);
         const secondaryInk = mutedInk(rootInk, this.resolvedRootSurfaceHex);
-        this.resolvedLabelColorHex = (!inkOverride && this.labelColorAuthored) ? s.labelColor.value.value
-            : this.defaultInk(this.resolvedRootSurfaceHex, s.labelColor.value.value);
+        const labelSet = s.labelColor.value.value;
+        this.resolvedLabelColorHex = forcedInk(labelSet,
+            this.defaultInk(this.resolvedRootSurfaceHex, labelSet), codex, !this.labelColorAuthored);
         this.target.style.color = hc ? fg : rootInk;
         const maxSections = s.maxVisibleSections.value || 10;
         let sectionCount = 0;
@@ -571,8 +591,8 @@ export class Visual implements IVisual {
             // swaps to the dark text token on dark surfaces (theme keyed off
             // the shared Background card, same source as the v3 theme pick below).
             const setTitle = titleFmt.titleColor?.value?.value || "#1a1a2e";
-            const adaptiveTitle = (!inkOverride && this.titleColorAuthored) ? setTitle
-                : this.defaultInk(this.resolvedRootSurfaceHex, setTitle);
+            const adaptiveTitle = forcedInk(setTitle,
+                this.defaultInk(this.resolvedRootSurfaceHex, setTitle), codex, !this.titleColorAuthored);
             this.titleEl.style.color = hc ? fg : adaptiveTitle;
             this.titleEl.style.display = "";
             if (titleInline) {
@@ -629,10 +649,20 @@ export class Visual implements IVisual {
         // (scope "all" leaves it in its own hue). The danger token stays the
         // band colour either way — clear-all-hover is semantic, not decorative.
         const accentFlareHex = neonColorFor(accentHex, codex);
+        // #819 rule 2 — the UNSELECTED chip's fill is chrome, not data: the
+        // stylesheet authored it for the light tone (`.osb-period-chip
+        // { background:#f5f4f0 }`), so a forced mode re-tones it to that mode's
+        // track token and the chip inks are judged against THAT. Auto keeps the
+        // sheet's own fill and sets nothing inline.
+        this.resolvedChipChromeFill = codex.mode === "auto" ? CHIP_SHEET_FILL_HEX : surf.track;
         this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentFlareHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
-        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(CHIP_SHEET_FILL_HEX, accentFlareHex));
+        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(this.resolvedChipChromeFill, accentFlareHex));
         this.slicerRow.style.setProperty("--osb-separator", hc ? fg : surf.border);
+        // Same rule for the row's own 3px overflow scrollbar — the sheet's
+        // rgba(0,0,0,.15) thumb is invisible on a forced dark card.
+        if (codex.mode === "auto") this.slicerRow.style.removeProperty("scrollbar-color");
+        else this.slicerRow.style.setProperty("scrollbar-color", `${surf.track} transparent`);
 
         // ─── Suite chrome: Border card + Corner Accents on the full-tile root.
         // (The shared modules were vendored earlier as "source only — rebuild
@@ -807,20 +837,22 @@ export class Visual implements IVisual {
      */
     private legibleChipInk(surfaceHex: string): string {
         const ink = String(this.resolvedChipTextColorHex ?? "");
-        // #819: a FORCED Codex mode owns this ink too. The author's cyan was
-        // chosen against THEIR bar; it is not a choice about a surface the
-        // Codex card painted. Measured on the Light mode probe before this
-        // clause: authored #00d9ff survived on the Codex light surface at
-        // 1.7:1. Under Auto the expression is unchanged (mode === "auto"),
-        // so an authored ink is still returned untouched, legible or not.
-        const authored = this.chipTextColorAuthored && this.resolvedCodex.mode === "auto";
-        if (authored || contrastRatio(ink, surfaceHex) >= 4.5) return ink;
-        // surfaceTokens("light").text is the ink for LIGHT surfaces (dark ink)
-        // and surfaceTokens("dark").text the ink for DARK ones, which is the
-        // (surface, darkInk, lightInk) order contrastInk expects.
-        const preferred = contrastInk(surfaceHex, surfaceTokens("light").text, surfaceTokens("dark").text);
-        return contrastRatio(preferred, surfaceHex) >= 4.5
-            ? preferred : contrastInk(surfaceHex, "#000000", "#ffffff");
+        // #819 rule 3 — an fx-resolved ink is DATA: a conditional-formatting
+        // rule chose it per value, so no forced mode may override it.
+        if (this.chipTextIsFx) return ink;
+        // Otherwise the one suite rule (forcedInk): Auto returns an explicit
+        // ink untouched and a default ink adaptively; a forced mode KEEPS an
+        // explicit ink that still reads 4.5:1 and falls back only when it does
+        // not. The guard is judged against the surface this chip is actually
+        // painted on — the ring chip's tint or the dropdown item's fill — not
+        // the root, which is why the resolved theme is passed with that
+        // surface substituted (NEXUS cycle-11 §7, class 1).
+        // defaultInk() is the mode's own default here: surfaceTokens("light")
+        // .text is the ink for LIGHT surfaces and surfaceTokens("dark").text
+        // for DARK ones, the (surface, darkInk, lightInk) order contrastInk
+        // expects, with a black/white last resort.
+        return forcedInk(ink, this.defaultInk(surfaceHex, ink),
+            { ...this.resolvedCodex, surfaceHex }, !this.chipTextColorAuthored);
     }
 
     /* ─── Chips Section ─── */
@@ -882,8 +914,11 @@ export class Visual implements IVisual {
                         * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
                     // Scope "flare" re-tints the ring/glow with the flare
                     // colour; scope "all" (and every non-Neon mode) leaves the
-                    // user's own fx-resolved chip colour in place.
-                    const chipFlareHex = neonColorFor(this.resolvedChipColorHex, codex);
+                    // user's own chip colour in place. #819 rule 1: a chip
+                    // colour a conditional-formatting rule produced is DATA and
+                    // keeps its own hue under every scope — it only glows in it.
+                    const chipFlareHex = this.chipColorIsFx
+                        ? this.resolvedChipColorHex : neonColorFor(this.resolvedChipColorHex, codex);
                     const mix = (pct: number) =>
                         `color-mix(in srgb, ${chipFlareHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
                     const tintPct = Math.round(Math.min(100, glowPct * 0.12));
@@ -911,6 +946,15 @@ export class Visual implements IVisual {
                     chip.style.background = bg;
                     chip.style.color = fg;
                     chip.style.borderColor = fg;
+                } else if (codex.mode !== "auto") {
+                    // #819 rule 2 — chrome, not data: under a forced mode the
+                    // chip pill takes the mode's track token, border token and
+                    // a legible muted ink instead of the stylesheet's light
+                    // #f5f4f0 / #e8e2d3 / #5e5d5a trio. Auto sets nothing here.
+                    const surf = surfaceTokens(codex.theme);
+                    chip.style.background = this.resolvedChipChromeFill;
+                    chip.style.borderColor = surf.border;
+                    chip.style.color = this.defaultInk(this.resolvedChipChromeFill, surf.muted);
                 }
                 // Unselected chip under an active EXTERNAL cross-filter
                 // (another visual narrowed this section): survivors get a
@@ -925,15 +969,18 @@ export class Visual implements IVisual {
                         // same budget rule as the selected chip, at 40%.
                         const litePct = 40
                             * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
-                        const liteFlareHex = neonColorFor(this.resolvedChipColorHex, codex);
+                        // Same rule-1 fx guard as the selected chip above.
+                        const liteFlareHex = this.chipColorIsFx
+                            ? this.resolvedChipColorHex : neonColorFor(this.resolvedChipColorHex, codex);
                         const liteMix = `color-mix(in srgb, ${liteFlareHex} ${Math.round(litePct)}%, transparent)`;
                         chip.style.borderColor = liteFlareHex;
-                        // No inline background is set in this branch, so the
-                        // neon-lite survivor keeps the stylesheet's own opaque
-                        // chip fill (style/visual.less `.osb-period-chip
-                        // { background: #f5f4f0 }`) — that, not the accent, is
-                        // the surface its ink has to be legible on (§7).
-                        chip.style.color = this.legibleChipInk(CHIP_SHEET_FILL_HEX);
+                        // This branch paints no fill of its own, so the
+                        // neon-lite survivor sits on the chip's chrome fill —
+                        // the stylesheet's #f5f4f0 under Auto, the forced
+                        // mode's track token otherwise (#819 rule 2). That, not
+                        // the accent, is the surface its ink must be legible
+                        // on (§7).
+                        chip.style.color = this.legibleChipInk(this.resolvedChipChromeFill);
                         chip.style.boxShadow = `0 0 8px ${liteMix}`;
                     } else {
                         chip.style.opacity = "0.35";
