@@ -23,6 +23,9 @@ import { toRgba, compositeOver, contrastInk, contrastRatio, mutedInk } from "./s
 import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
+import {
+    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme
+} from "./shared/codexThemeSettings";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
 import { applyBorder } from "./shared/borderSettings";
@@ -147,6 +150,16 @@ export class Visual implements IVisual {
     // Theme resolved from the shared Background card each render — chip and
     // dropdown renderers key surface tokens + glow strength off it.
     private resolvedTheme: Theme = "light";
+    // Nexus Codex Theme (#819) — resolved ONCE per render in renderSlicerBar()
+    // and routed from there into the chip / dropdown / panel renderers, so the
+    // bar and its fan-out panel can never disagree about the mode. The field
+    // initialiser is the Auto identity (no card, no HC): it resolves to exactly
+    // the surface the visual derived on its own, so a render that somehow read
+    // it before renderSlicerBar() ran would still be today's render.
+    private resolvedCodex: ResolvedCodexTheme = resolveCodexTheme(undefined, {
+        hcActive: false, autoTheme: "light", autoBgHex: "#ffffff",
+        autoTransparencyPct: 0, behindHex: "#ffffff",
+    });
     // Per-section survivor sets when an EXTERNAL cross-filter has narrowed the
     // incoming dataView (section name → labels still present). Empty map when
     // no external filter is active. Drives the neon-lite/ghost chip states.
@@ -446,6 +459,7 @@ export class Visual implements IVisual {
     }
 
     public getFormattingModel(): powerbi.visuals.FormattingModel {
+        this.formattingSettings.codexTheme.reveal();
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
     }
 
@@ -507,11 +521,28 @@ export class Visual implements IVisual {
         const background = this.formattingSettings.background;
         const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
         const outerBgTransparencyPct = background.transparency.value ?? 0;
-        this.resolvedRootSurfaceHex = compositeOver(
-            outerBgHex, outerBgTransparencyPct, this.colorPalette.background?.value || "#ffffff");
+        const behindHex = this.colorPalette.background?.value || "#ffffff";
+        const autoSurfaceHex = compositeOver(outerBgHex, outerBgTransparencyPct, behindHex);
+        // ─── Nexus Codex Theme (#819): ONE switch above the automatic pick ──
+        // Auto returns exactly the surface/theme derived here, so a report that
+        // never touched the card renders byte-for-byte as before; Dark/Light/
+        // Neon paint the Codex surface at the card's own Surface Transparency
+        // and force the token set. High contrast already collapsed to Auto
+        // inside the resolver — no HC branch of our own.
+        const autoTheme: Theme = themeFor(autoSurfaceHex);
+        const codex = resolveCodexTheme(this.formattingSettings.codexTheme, {
+            hcActive: hc, autoTheme, autoBgHex: outerBgHex,
+            autoTransparencyPct: outerBgTransparencyPct, behindHex,
+        });
+        this.resolvedCodex = codex;
+        // A forced mode OWNS the text inks against its own composited surface:
+        // a label/title colour chosen for a white bar is not a choice about the
+        // Codex dark surface. The chip/band/fx colours stay the user's.
+        const inkOverride = codex.mode !== "auto";
+        this.resolvedRootSurfaceHex = codex.surfaceHex;
         const rootInk = this.defaultInk(this.resolvedRootSurfaceHex);
         const secondaryInk = mutedInk(rootInk, this.resolvedRootSurfaceHex);
-        this.resolvedLabelColorHex = this.labelColorAuthored ? s.labelColor.value.value
+        this.resolvedLabelColorHex = (!inkOverride && this.labelColorAuthored) ? s.labelColor.value.value
             : this.defaultInk(this.resolvedRootSurfaceHex, s.labelColor.value.value);
         this.target.style.color = hc ? fg : rootInk;
         const maxSections = s.maxVisibleSections.value || 10;
@@ -540,7 +571,7 @@ export class Visual implements IVisual {
             // swaps to the dark text token on dark surfaces (theme keyed off
             // the shared Background card, same source as the v3 theme pick below).
             const setTitle = titleFmt.titleColor?.value?.value || "#1a1a2e";
-            const adaptiveTitle = this.titleColorAuthored ? setTitle
+            const adaptiveTitle = (!inkOverride && this.titleColorAuthored) ? setTitle
                 : this.defaultInk(this.resolvedRootSurfaceHex, setTitle);
             this.titleEl.style.color = hc ? fg : adaptiveTitle;
             this.titleEl.style.display = "";
@@ -578,7 +609,7 @@ export class Visual implements IVisual {
         // the host tile visible above/below the bar = "multiple backgrounds".
         // Paint the full-height ROOT instead and keep the bar row transparent,
         // so a single background fills the tile.
-        this.target.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
+        this.target.style.background = hc ? bg : toRgba(codex.bgHex, codex.transparencyPct);
         // The bar row is transparent, so every chip painted below sits on THIS
         // composited surface — the Background card over the host theme's
         // background. Cached for legibleChipInk() (NEXUS cycle-11 §7).
@@ -589,14 +620,18 @@ export class Visual implements IVisual {
         // the magenta clear-all hover via custom properties (visual.less);
         // per-instance "selected" chip colour is still resolved through the
         // existing fx-wired pickers below (D-16).
-        const theme: Theme = themeFor(this.resolvedRootSurfaceHex);
+        const theme: Theme = codex.theme;
         this.resolvedTheme = theme;
         const surf = surfaceTokens(theme);
         const accentHex = accentToken(theme);
         const dangerHex = bandColor("danger", theme);
-        this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentHex);
+        // Neon, scope "flare": the hover-ring ACCENT takes the flare colour
+        // (scope "all" leaves it in its own hue). The danger token stays the
+        // band colour either way — clear-all-hover is semantic, not decorative.
+        const accentFlareHex = neonColorFor(accentHex, codex);
+        this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentFlareHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
-        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(CHIP_SHEET_FILL_HEX, accentHex));
+        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(CHIP_SHEET_FILL_HEX, accentFlareHex));
         this.slicerRow.style.setProperty("--osb-separator", hc ? fg : surf.border);
 
         // ─── Suite chrome: Border card + Corner Accents on the full-tile root.
@@ -611,11 +646,13 @@ export class Visual implements IVisual {
             metadataObjects: undefined,
         });
         applyCardSignature(this.cornerSignature, this.formattingSettings.cardSignature, {
-            autoHex: accentHex,
+            autoHex: accentFlareHex,
             hcActive: hc,
             hcColor: fg,
             mirror: true,
-            glowMix: hc ? 0 : (theme === "dark" ? 55 : 0),
+            // Existing glow site #1 — under Neon the card's Glow Strength IS
+            // the budget (pilot glowMix idiom); otherwise the surface decides.
+            glowMix: hc ? 0 : codex.neon ? codex.glow : (theme === "dark" ? 55 : 0),
             muted: false,
         });
 
@@ -769,7 +806,14 @@ export class Visual implements IVisual {
      */
     private legibleChipInk(surfaceHex: string): string {
         const ink = String(this.resolvedChipTextColorHex ?? "");
-        if (this.chipTextColorAuthored || contrastRatio(ink, surfaceHex) >= 4.5) return ink;
+        // #819: a FORCED Codex mode owns this ink too. The author's cyan was
+        // chosen against THEIR bar; it is not a choice about a surface the
+        // Codex card painted. Measured on the Light mode probe before this
+        // clause: authored #00d9ff survived on the Codex light surface at
+        // 1.7:1. Under Auto the expression is unchanged (mode === "auto"),
+        // so an authored ink is still returned untouched, legible or not.
+        const authored = this.chipTextColorAuthored && this.resolvedCodex.mode === "auto";
+        if (authored || contrastRatio(ink, surfaceHex) >= 4.5) return ink;
         // surfaceTokens("light").text is the ink for LIGHT surfaces (dark ink)
         // and surfaceTokens("dark").text the ink for DARK ones, which is the
         // (surface, darkInk, lightInk) order contrastInk expects.
@@ -782,6 +826,9 @@ export class Visual implements IVisual {
 
     private renderChipsSection(section: SlicerSection, s: any): void {
         const hc = this.isHighContrast;
+        // The ONE theme object resolved for this render (#819) — never
+        // re-resolved per renderer.
+        const codex = this.resolvedCodex;
         const fg = hc ? this.colorPalette.foreground.value : "";
         const bg = hc ? this.colorPalette.background.value : "";
         const fgSelected = hc && (this.colorPalette as any).foregroundSelected
@@ -827,22 +874,34 @@ export class Visual implements IVisual {
                     // --glowmix drop on the light canvas — full neon on a
                     // pale surface reads as smudge, not glow).
                     const chipTransparencyPct = s.chipTransparency.value ?? 0;
+                    // Existing glow site #2 — under Neon the card's Glow
+                    // Strength replaces the surface-derived multiplier as this
+                    // stack's budget; Auto/Dark/Light keep today's factor.
                     const glowPct = Math.max(0, 100 - chipTransparencyPct)
-                        * (this.resolvedTheme === "dark" ? 1 : 0.55);
+                        * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
+                    // Scope "flare" re-tints the ring/glow with the flare
+                    // colour; scope "all" (and every non-Neon mode) leaves the
+                    // user's own fx-resolved chip colour in place.
+                    const chipFlareHex = neonColorFor(this.resolvedChipColorHex, codex);
                     const mix = (pct: number) =>
-                        `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
+                        `color-mix(in srgb, ${chipFlareHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
                     const tintPct = Math.round(Math.min(100, glowPct * 0.12));
                     chip.style.background = mix(glowPct * 0.12);
                     // The ring chip's visible surface is that faint accent tint
                     // over the bar's own composited background — the "ring
                     // chips" half of NEXUS cycle-11 §7.
                     chip.style.color = this.legibleChipInk(compositeOver(
-                        this.resolvedChipColorHex, 100 - tintPct, this.resolvedRootSurfaceHex));
-                    chip.style.borderColor = this.resolvedChipColorHex;
+                        chipFlareHex, 100 - tintPct, this.resolvedRootSurfaceHex));
+                    chip.style.borderColor = chipFlareHex;
+                    // Neon adds the shared wide halo (neonShadow) on TOP of the
+                    // existing ring — the SELECTED chip is this visual's
+                    // primary mark. Nothing else in the bar gains a new glow.
+                    const neonHalo = codex.neon && codex.glow > 0
+                        ? `, ${neonShadow(chipFlareHex, codex.glow)}` : "";
                     chip.style.boxShadow =
                         `0 0 14px ${mix(glowPct)}, ` +
                         `0 0 4px ${mix(glowPct)}, ` +
-                        `inset 0 0 8px ${mix(glowPct * 0.35)}`;
+                        `inset 0 0 8px ${mix(glowPct * 0.35)}` + neonHalo;
                     chip.style.textShadow = `0 0 8px ${mix(glowPct * 0.8)}`;
                     chip.style.fontWeight = "700";
                 }
@@ -861,9 +920,13 @@ export class Visual implements IVisual {
                 const avail = this.externalAvail.get(section.name);
                 if (avail && !hc) {
                     if (avail.has(item.rawValue)) {
-                        const litePct = 40 * (this.resolvedTheme === "dark" ? 1 : 0.55);
-                        const liteMix = `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(litePct)}%, transparent)`;
-                        chip.style.borderColor = this.resolvedChipColorHex;
+                        // Existing glow site #3 (cross-filter survivor ring) —
+                        // same budget rule as the selected chip, at 40%.
+                        const litePct = 40
+                            * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
+                        const liteFlareHex = neonColorFor(this.resolvedChipColorHex, codex);
+                        const liteMix = `color-mix(in srgb, ${liteFlareHex} ${Math.round(litePct)}%, transparent)`;
+                        chip.style.borderColor = liteFlareHex;
                         // No inline background is set in this branch, so the
                         // neon-lite survivor keeps the stylesheet's own opaque
                         // chip fill (style/visual.less `.osb-period-chip
@@ -1437,9 +1500,14 @@ export class Visual implements IVisual {
         // + toRgba() read as renderSlicerBar's this.slicerRow paint (same
         // underlying colour, this is a second render site for it — the
         // floating dropdown panel/trigger — not a new colour surface).
-        const background = this.formattingSettings.background;
-        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
-        const outerBgTransparencyPct = background.transparency.value ?? 0;
+        // #819: the fan-out panel is a CHILD surface of the same tile, so it
+        // paints the SAME fill the root does — the Codex surface under a forced
+        // mode, the Background card under Auto. Its chip/accent colours are
+        // deliberately left as the user's and it gains NO neon glow: the Neon
+        // glow sites are the selected chip and the bar's own signature only.
+        const codex = this.resolvedCodex;
+        const outerBgHex = codex.bgHex;
+        const outerBgTransparencyPct = codex.transparencyPct;
 
         // chipBg stays OPAQUE — used for text/border legibility (action
         // button text colour, selected-item border) per T-07-02; only the

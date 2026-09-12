@@ -8,6 +8,7 @@ import FormattingSettingsSlice = formattingSettings.Slice;
 import FormattingSettingsModel = formattingSettings.Model;
 
 import { BackgroundSettings } from "./shared/backgroundSettings";
+import { CodexThemeSettings } from "./shared/codexThemeSettings";
 import { TitleSettings } from "./shared/titleSettings";
 import { BorderSettings } from "./shared/borderSettings";
 import { CardSignatureSettings } from "./shared/cardSignatureSettings";
@@ -186,6 +187,7 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     titleSettings = new TitleSettings();
     slicerBarCard = new SlicerBarSettings();
     background = new BackgroundSettings();
+    codexTheme = new CodexThemeSettings();
     cardSignature = new CardSignatureSettings();
     visualBorder = new BorderSettings();
 
@@ -199,5 +201,5 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     // more common "never painted" case. The shared Background card's own
     // raw default (opaque white, transparency 0) is pixel-identical.
 
-    cards = [this.titleSettings, this.slicerBarCard, this.background, this.cardSignature, this.visualBorder];
+    cards = [this.titleSettings, this.slicerBarCard, this.background, this.codexTheme, this.cardSignature, this.visualBorder];
 }
