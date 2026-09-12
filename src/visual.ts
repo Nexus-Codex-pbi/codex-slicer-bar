@@ -25,6 +25,7 @@ import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 import {
     resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme, flareHexFor, forcedInk,
+    isFxResolved,
 } from "./shared/codexThemeSettings";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
@@ -38,9 +39,9 @@ const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
 /** The stylesheet's own unselected-chip fill — a MIRROR of
  * `style/visual.less` `.osb-period-chip { background: #f5f4f0 }`, not a new
  * colour: the neon-lite branch sets no inline background, so this is the
- * surface its ink is painted on (NEXUS cycle-11 §7). Under Auto it never
- * reaches the DOM; a FORCED mode replaces it with the mode's track token and
- * paints that inline (#819 rule 2 — see resolvedChipChromeFill). */
+ * surface its ink is painted on (NEXUS cycle-11 §7). On an Auto-LIGHT render it
+ * never reaches the DOM; every other render replaces it with the resolved tone's
+ * track token and paints that inline (#819 rule 2 — see resolvedChipChromeFill). */
 const CHIP_SHEET_FILL_HEX = "#f5f4f0";
 
 /** Luminance-based theme pick (same 0.55 threshold convention as the
@@ -164,6 +165,9 @@ export class Visual implements IVisual {
     // the stylesheet's own light chrome fill; a forced mode re-tones it to that
     // mode's track token and paints it inline. Chip inks are judged against it.
     private resolvedChipChromeFill: string = CHIP_SHEET_FILL_HEX;
+    // True only on an AUTO + LIGHT render, where the stylesheet's own chrome is
+    // already right and the chip renderer must set nothing inline (#819 pass 2).
+    private chipChromeIsSheet = true;
     // Nexus Codex Theme (#819) — resolved ONCE per render in renderSlicerBar()
     // and routed from there into the chip / dropdown / panel renderers, so the
     // bar and its fan-out panel can never disagree about the mode. The field
@@ -319,8 +323,9 @@ export class Visual implements IVisual {
             );
             this.resolvedChipColorHex = this.chipColorHelper.getColorForMeasure(dv.metadata?.objects, "chipColor")
                 ?? chipFmt.chipColor.value.value;
-            // A rule resolved it iff it differs from the static pane value.
-            this.chipColorIsFx = this.resolvedChipColorHex !== chipFmt.chipColor.value.value;
+            // A rule resolved it iff it differs from the static pane value —
+            // the ONE suite-wide fx test (shared isFxResolved), not a local idiom.
+            this.chipColorIsFx = isFxResolved(this.resolvedChipColorHex, chipFmt.chipColor.value.value);
 
             // ─── fx wiring — Selected Chip Text Colour (TEXT-02) ────────
             // Same global/measure-level pattern as chipColor above:
@@ -340,7 +345,7 @@ export class Visual implements IVisual {
             );
             this.resolvedChipTextColorHex = this.chipTextColorHelper.getColorForMeasure(dv.metadata?.objects, "chipTextColor")
                 ?? chipFmt.chipTextColor.value.value;
-            this.chipTextIsFx = this.resolvedChipTextColorHex !== chipFmt.chipTextColor.value.value;
+            this.chipTextIsFx = isFxResolved(this.resolvedChipTextColorHex, chipFmt.chipTextColor.value.value);
             // Did the report SET this ink, or is it still the declared default?
             // dataView.metadata.objects is the same bag populateFormattingSettingsModel
             // and getColorForMeasure both read, so its slicerBar.chipTextColor
@@ -650,11 +655,21 @@ export class Visual implements IVisual {
         // band colour either way — clear-all-hover is semantic, not decorative.
         const accentFlareHex = neonColorFor(accentHex, codex);
         // #819 rule 2 — the UNSELECTED chip's fill is chrome, not data: the
-        // stylesheet authored it for the light tone (`.osb-period-chip
-        // { background:#f5f4f0 }`), so a forced mode re-tones it to that mode's
-        // track token and the chip inks are judged against THAT. Auto keeps the
-        // sheet's own fill and sets nothing inline.
-        this.resolvedChipChromeFill = codex.mode === "auto" ? CHIP_SHEET_FILL_HEX : surf.track;
+        // stylesheet authored it for the LIGHT tone (`.osb-period-chip
+        // { background:#f5f4f0 }`), so anything rendering on a dark surface
+        // re-tones it to that tone's track token and the chip inks are judged
+        // against THAT.
+        // Pass 2 re-bless (Neil 2026-09-12): the test is the RESOLVED TONE, not
+        // the mode. Auto on a dark composited card (a white bar at 100%
+        // transparency over a dark page — the dropdown panel has keyed off
+        // `resolvedTheme` since a5dee9f) was still painting the light sheet
+        // chrome, so an Auto-dark bar had light pills on a dark card. Only an
+        // AUTO + LIGHT render keeps the sheet's own fill and sets nothing
+        // inline; every other render paints the tone's track token. Forced
+        // modes are unchanged — a forced LIGHT card must keep taking
+        // surfaceTokens("light").track (#e2e4ef), not the sheet's #f5f4f0.
+        this.chipChromeIsSheet = codex.mode === "auto" && theme === "light";
+        this.resolvedChipChromeFill = this.chipChromeIsSheet ? CHIP_SHEET_FILL_HEX : surf.track;
         this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentFlareHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
         this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(this.resolvedChipChromeFill, accentFlareHex));
@@ -946,12 +961,14 @@ export class Visual implements IVisual {
                     chip.style.background = bg;
                     chip.style.color = fg;
                     chip.style.borderColor = fg;
-                } else if (codex.mode !== "auto") {
-                    // #819 rule 2 — chrome, not data: under a forced mode the
-                    // chip pill takes the mode's track token, border token and
-                    // a legible muted ink instead of the stylesheet's light
-                    // #f5f4f0 / #e8e2d3 / #5e5d5a trio. Auto sets nothing here.
-                    const surf = surfaceTokens(codex.theme);
+                } else if (!this.chipChromeIsSheet) {
+                    // #819 rule 2 — chrome, not data: on any surface but an
+                    // Auto-LIGHT one the chip pill takes the resolved tone's
+                    // track token, border token and a legible muted ink instead
+                    // of the stylesheet's light #f5f4f0 / #e8e2d3 / #5e5d5a
+                    // trio. Auto + light sets nothing here (see the
+                    // chipChromeIsSheet derivation in renderSlicerBar).
+                    const surf = surfaceTokens(this.resolvedTheme);
                     chip.style.background = this.resolvedChipChromeFill;
                     chip.style.borderColor = surf.border;
                     chip.style.color = this.defaultInk(this.resolvedChipChromeFill, surf.muted);
@@ -976,10 +993,10 @@ export class Visual implements IVisual {
                         chip.style.borderColor = liteFlareHex;
                         // This branch paints no fill of its own, so the
                         // neon-lite survivor sits on the chip's chrome fill —
-                        // the stylesheet's #f5f4f0 under Auto, the forced
-                        // mode's track token otherwise (#819 rule 2). That, not
-                        // the accent, is the surface its ink must be legible
-                        // on (§7).
+                        // the stylesheet's #f5f4f0 on an Auto-LIGHT render, the
+                        // resolved tone's track token on every other (#819 rule
+                        // 2 + the pass-2 re-bless). That, not the accent, is the
+                        // surface its ink must be legible on (§7).
                         chip.style.color = this.legibleChipInk(this.resolvedChipChromeFill);
                         chip.style.boxShadow = `0 0 8px ${liteMix}`;
                     } else {
