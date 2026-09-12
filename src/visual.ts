@@ -24,7 +24,7 @@ import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataPar
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
 import {
-    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme
+    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme, flareHexFor,
 } from "./shared/codexThemeSettings";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
@@ -647,6 +647,7 @@ export class Visual implements IVisual {
         });
         applyCardSignature(this.cornerSignature, this.formattingSettings.cardSignature, {
             autoHex: accentFlareHex,
+            flareHex: flareHexFor(codex),
             hcActive: hc,
             hcColor: fg,
             mirror: true,
