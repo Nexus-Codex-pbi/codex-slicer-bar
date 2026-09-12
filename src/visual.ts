@@ -1544,8 +1544,11 @@ export class Visual implements IVisual {
         const borderClr = hc ? fg : surfaceTokens(this.resolvedTheme).border;
         const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
         const labelClr = hc ? fg : this.resolvedLabelColorHex;
-        const itemBg = hc ? bg : "#ffffff";
-        const itemText = hc ? fg : "#1a1a1a";
+        // Dropdown rows were hard-coded white/near-black whatever the theme — under
+        // Dark (auto or forced) they take the dark card token and its legible ink
+        // (#819 roll-out, left open by the Slicer Bar executor; Neil 2026-09-12).
+        const itemBg = hc ? bg : (this.resolvedTheme === "light" ? "#ffffff" : surfaceTokens("dark").card);
+        const itemText = hc ? fg : (this.resolvedTheme === "light" ? "#1a1a1a" : this.defaultInk(itemBg));
         const hoverBg = hc ? bg : (this.resolvedTheme === "light" ? "#f0eef8" : panelSurfaceHex);
         const hoverInk = hc ? fg : this.defaultInk(hoverBg, chipBg);
 
