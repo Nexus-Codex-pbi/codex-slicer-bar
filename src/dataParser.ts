@@ -2,11 +2,15 @@
 
 import powerbi from "powerbi-visuals-api";
 import DataView = powerbi.DataView;
+import { formatModelNumber } from "./shared/numberFormat";
 
 /* ─── Interfaces ─── */
 
+export type FilterValue = string | number | boolean | null;
+
 export interface SlicerItem {
     label: string;
+    rawValue: FilterValue;
     value: string;
     shortLabel: string;
     sort: number;
@@ -17,8 +21,10 @@ export interface SlicerSection {
     name: string;
     /** "chips" or "dropdown" — from data column or formatting fallback */
     displayMode: string;
+    displayModeFromData: boolean;
     /** "single" or "multi" — from data column or formatting fallback */
     selectionMode: string;
+    selectionModeFromData: boolean;
     /** Whether this section applies filters (false = static display) */
     interactive: boolean;
     /** Filter target: { table, column } parsed from Value field (Table.Column format) */
@@ -36,6 +42,7 @@ export interface SlicerSection {
 interface BridgeRow {
     category: string;
     label: string;
+    rawValue: FilterValue;
     value: string;
     shortLabel: string;
     defaultValue: string;
@@ -96,7 +103,7 @@ function extractColumnTarget(
  * - SelectionMode: "single" or "multi" (default: "single")
  * - Value field encodes filter target as "Table.Column" — if empty, section is non-interactive (static)
  */
-export function parseDataView(dataView: DataView): SlicerSection[] {
+export function parseDataView(dataView: DataView, locale?: string): SlicerSection[] {
     if (!dataView?.categorical) return [];
 
     const cat = dataView.categorical;
@@ -118,6 +125,8 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
     const displayModeIdx = roleToCatIdx["displayMode"];
     const selectionModeIdx = roleToCatIdx["selectionMode"];
     const sortIdx = roleToCatIdx["sortOrder"];
+    const sortColumn = sortIdx !== undefined ? categories[sortIdx]
+        : cat.values?.find(column => column.source.roles?.sortOrder);
 
     // Single-field simple mode (Neil live-QA 2026-07-16): when only ONE of
     // Category/Label is bound, that column supplies the item labels and the
@@ -132,17 +141,25 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         ? (categories[effLabelIdx].source.displayName || "Filter")
         : null;
 
-    const rowCount = categories[0]?.values?.length ?? 0;
+    const rowCount = categories[effLabelIdx]?.values?.length ?? 0;
 
     const rows: BridgeRow[] = [];
     for (let r = 0; r < rowCount; r++) {
+        const raw = categories[effLabelIdx].values[r];
+        const rawValue: FilterValue = raw instanceof Date ? raw.toISOString() : raw ?? null;
+        const label = raw === null || raw === undefined ? "(Blank)"
+            : raw === "" ? "(Empty)"
+            : raw instanceof Date ? raw.toLocaleDateString(locale)
+            : typeof raw === "number" ? formatModelNumber(raw, categories[effLabelIdx].source.format, locale)
+            : String(raw);
         rows.push({
-            category: singleSectionName ?? String(categories[catIdx].values[r] || ""),
-            label: String(categories[effLabelIdx].values[r] || ""),
-            value: valueIdx !== undefined ? String(categories[valueIdx].values[r] || "") : "",
-            shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] || "") : "",
-            defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] || "") : "",
-            sortOrder: sortIdx !== undefined ? Number(categories[sortIdx].values[r]) || 0 : 0,
+            category: singleSectionName ?? String(categories[catIdx].values[r] ?? "(Blank)"),
+            label,
+            rawValue,
+            value: valueIdx !== undefined ? String(categories[valueIdx].values[r] ?? "") : "",
+            shortLabel: shortLabelIdx !== undefined ? String(categories[shortLabelIdx].values[r] ?? "") : "",
+            defaultValue: defaultValueIdx !== undefined ? String(categories[defaultValueIdx].values[r] ?? "") : "",
+            sortOrder: sortColumn ? Number(sortColumn.values[r]) || 0 : 0,
             displayMode: displayModeIdx !== undefined ? String(categories[displayModeIdx].values[r] || "").toLowerCase() : "",
             selectionMode: selectionModeIdx !== undefined ? String(categories[selectionModeIdx].values[r] || "").toLowerCase() : "",
         });
@@ -165,13 +182,14 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
     for (const name of categoryOrder) {
         const groupRows = grouped.get(name)!;
 
-        // Deduplicate items by label
+        // Display strings are not identities: 0 and "0" must remain distinct.
         const seen = new Set<string>();
         const items: SlicerItem[] = [];
         for (const row of groupRows) {
-            if (!row.label || seen.has(row.label)) continue;
-            seen.add(row.label);
-            items.push({ label: row.label, value: row.value, shortLabel: row.shortLabel, sort: row.sortOrder });
+            const key = JSON.stringify(row.rawValue);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            items.push({ label: row.label, rawValue: row.rawValue, value: row.value, shortLabel: row.shortLabel, sort: row.sortOrder });
         }
         items.sort((a, b) => a.sort - b.sort);
 
@@ -244,7 +262,9 @@ export function parseDataView(dataView: DataView): SlicerSection[] {
         sections.push({
             name,
             displayMode,
+            displayModeFromData: dataDisplayMode === "chips" || dataDisplayMode === "dropdown",
             selectionMode,
+            selectionModeFromData: dataSelectionMode === "single" || dataSelectionMode === "multi",
             interactive,
             filterTarget,
             defaultValue,

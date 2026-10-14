@@ -8,7 +8,9 @@ import FormattingSettingsSlice = formattingSettings.Slice;
 import FormattingSettingsModel = formattingSettings.Model;
 
 import { BackgroundSettings } from "./shared/backgroundSettings";
+import { CodexThemeSettings } from "./shared/codexThemeSettings";
 import { TitleSettings } from "./shared/titleSettings";
+import { LicenceSettings } from "./shared/licenceSettings";
 import { BorderSettings } from "./shared/borderSettings";
 import { CardSignatureSettings } from "./shared/cardSignatureSettings";
 import { textAlignFor, makeFontControl } from "./shared/textFormatting";
@@ -48,7 +50,7 @@ export class SlicerBarSettings extends FormattingSettingsCard {
     // italic/underline are NEW sibling properties. Bold defaults true —
     // .osb-slicer-label carries a pre-existing hardcoded font-weight:600
     // (semibold-or-bolder maps to Bold-default-true per the suite's
-    // weightFor idiom; bold-off falls back to the surface's own 600).
+    // weightFor idiom; bold-off explicitly renders normal weight).
     // Alignment omitted — the bar is a flex row, label position is
     // layout-determined (matches 01-11/01-12/01-13 precedent).
     private labelFontBundle = makeFontControl("label", { fontFamily: FONT_STACK, fontSize: 11, bold: true });
@@ -186,6 +188,7 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     titleSettings = new TitleSettings();
     slicerBarCard = new SlicerBarSettings();
     background = new BackgroundSettings();
+    codexTheme = new CodexThemeSettings();
     cardSignature = new CardSignatureSettings();
     visualBorder = new BorderSettings();
 
@@ -199,5 +202,7 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     // more common "never painted" case. The shared Background card's own
     // raw default (opaque white, transparency 0) is pixel-identical.
 
-    cards = [this.titleSettings, this.slicerBarCard, this.background, this.cardSignature, this.visualBorder];
+    licence = new LicenceSettings();
+
+    cards = [this.titleSettings, this.slicerBarCard, this.background, this.codexTheme, this.cardSignature, this.visualBorder, this.licence];
 }

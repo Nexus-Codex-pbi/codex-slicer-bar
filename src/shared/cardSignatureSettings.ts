@@ -13,8 +13,14 @@
 // rule) — resolveCardSignature enforces that; visuals should not add
 // their own HC branches around it.
 
+import powerbi from "powerbi-visuals-api";
 import { formattingSettings } from "powerbi-visuals-utils-formattingmodel";
 import type { CardSignatureHandle, CardSignatureVariant } from "./cardSignature";
+
+// fx (conditional formatting) on the accent colour — same wiring as the
+// Title and Background colour pickers (Neil 2026-09-12: "we do not have the
+// fx function for the accents on any visual").
+const ConstantOrRule = powerbi.VisualEnumerationInstanceKinds.ConstantOrRule;
 
 import FormattingSettingsCard = formattingSettings.SimpleCard;
 import FormattingSettingsSlice = formattingSettings.Slice;
@@ -47,7 +53,8 @@ export class CardSignatureSettings extends FormattingSettingsCard {
     color = new formattingSettings.ColorPicker({
         name: "color",
         displayName: "Custom Color",
-        value: { value: "#8f8ab8" }
+        value: { value: "#8f8ab8" },
+        instanceKind: ConstantOrRule
     });
 
     mirrorCorners = new formattingSettings.ToggleSwitch({
@@ -85,6 +92,13 @@ export interface CardSignatureParams {
     muted?: boolean;
     mirror?: boolean;
     cardRadius?: number;
+    /** Nexus Codex Theme (#819), Neon with scope "flare": the flare colour
+     *  outranks BOTH the visual's auto colour and a custom colour the author
+     *  picked — the contract names the user's hex as the thing the flare
+     *  replaces. Found by three executors independently (Zone Gauge, Callback
+     *  Card, KPI Sparkline): tinting `autoHex` alone never reaches a report
+     *  with Auto Color off. Undefined outside Neon-flare; HC still wins. */
+    flareHex?: string;
 }
 
 export interface ResolvedCardSignature {
@@ -109,6 +123,7 @@ export function resolveCardSignature(
     } else if (!p.muted && sig && !sig.autoColor.value) {
         hex = sig.color.value.value;
     }
+    if (!p.hcActive && p.flareHex) hex = p.flareHex;
     return { visible, variant, hex };
 }
 
@@ -129,7 +144,14 @@ export function applyCardSignature(
     handle.update(r.hex, {
         variant: r.variant,
         glowMix: p.glowMix,
-        muted: p.muted,
+        // High contrast outranks the muted (empty-state) treatment: styleBracket
+        // paints `mutedColor` at 0.4 opacity when muted, which discarded the
+        // resolved HC foreground in every visual's empty state (NEXUS cycle-12
+        // §8, measured brand violet rgb(143,138,184) on black).
+        muted: p.muted && !p.hcActive,
+        // …and the renderer itself drops gradients/shine/glow under HC, so
+        // Flat Bar / Glass Tube stay on the system colour (astra pass three).
+        highContrast: !!p.hcActive,
         mirror: sig ? sig.mirrorCorners.value : p.mirror,
         cardRadius: (sig && sig.cornerRadius.value !== 10)
             ? Math.max(0, Math.min(24, sig.cornerRadius.value))

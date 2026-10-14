@@ -25,14 +25,14 @@ Data-driven slicer bar with configurable sections. Each section renders as chips
 |------|--------------|------|-----------|-----------|-------------|
 | category | Category | Grouping | No (max 1) | Text or Grouping | Section grouping — each distinct value creates a slicer section |
 | label | Label | Grouping | No (max 1) | Text or Grouping | Display text for each item within a section |
-| value | Value | Grouping | No (max 1) | Text or Grouping | Filter target as Table.Column (e.g. DimDate.Period). Leave empty for static display. |
+| value | Value | Grouping | No (max 1) | Text or Grouping | Optional filter-target override as Table.Column (e.g. DimDate.Period). Otherwise the bound label/category column supplies the target. |
 | sortOrder | Sort Order | Measure | No (max 1) | Numeric | Numeric sort within each section (ascending) |
 | displayMode | Display Mode | Grouping | No (max 1) | Text or Grouping | Render style per section: Chips or Dropdown. Overrides formatting panel default. |
 | selectionMode | Selection Mode | Grouping | No (max 1) | Text or Grouping | Selection behaviour per section: Single or Multi. Overrides formatting panel default. |
 | shortLabel | Short Label | Grouping | No (max 1) | Text or Grouping | Secondary text shown when item is selected (e.g. date range). Optional. |
 | defaultValue | Default Value | Grouping | No (max 1) | Text or Grouping | Label of the item to auto-select on load. Use a measure per page for dynamic defaults. |
 
-Note: Each role can have at most one field bound. At least Category and Label are required for meaningful display. Value is required for filtering functionality.
+Note: Each role can have at most one field bound. A single Category or Label field is sufficient for a simple slicer. Bind both for grouped bridge-table sections. Display is static only when no filter-target metadata can be resolved.
 
 ## Formatting Options
 The visual provides the following format pane cards:
@@ -62,9 +62,8 @@ The visual provides the following format pane cards:
 1. Import the `.pbiviz` file into Power BI Desktop (from the Visuals pane -> ... -> Import from file).
 2. Locate the visual in the Visualizations pane and add it to the report canvas.
 3. Bind data to the data roles:
-   - Category: Required for section grouping (e.g., a date table with Year-Month)
-   - Label: Required for item display text (e.g., month names)
-   - Value: Required for filtering (e.g., a column like 'DimDate[YearMonth]' that can be used in a filter)
+   - Category or Label: Bind one field for a simple slicer, or both for grouped sections.
+   - Value: Optional target override containing a Table.Column reference.
    - Optional: Sort Order (numeric field to sort items within each section)
    - Optional: Display Mode (text field with values "chips" or "dropdown" to override per section)
    - Optional: Selection Mode (text field with values "single" or "multi" to override per section)
@@ -84,13 +83,14 @@ The visual provides the following format pane cards:
    - Hover to see tooltips with section, label, value, and short label
 
 ## Limitations
+- Defaults apply when a section first arrives, its filter target changes, or its configured default changes. Clearing filters does not reapply an unchanged default. An empty or unbound data view resets cached options and selections.
 - The visual expects one row per item per section. Duplicate items within a section may cause unexpected behavior.
 - Each data role accepts only one field.
 - The Value role must be a column that can be used in a filter (typically a table.column reference).
 - The Display Mode and Selection Mode roles, if bound, must be text fields with the expected values.
 - The Default Value role, if bound, must match the label text exactly (case-insensitive).
 - The visual does not support hierarchical sections or nested grouping.
-- The visual does not support search within dropdown sections.
+- Dropdowns with more than ten options include search. High contrast uses the host palette, including search results and control states.
 
 ## Support
 For help or questions, visit https://nexuscodex.nexus/support

@@ -19,17 +19,30 @@ import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 import { ColorHelper } from "powerbi-visuals-utils-colorutils";
 
 import { VisualFormattingSettingsModel, textAlignFor } from "./settings";
-import { toRgba } from "./shared/colorHelpers";
-import { parseDataView, SlicerSection, SlicerItem } from "./dataParser";
+import { toRgba, compositeOver, contrastInk, contrastRatio, mutedInk } from "./shared/colorHelpers";
+import { parseDataView, SlicerSection, SlicerItem, FilterValue } from "./dataParser";
 import { Theme, accentToken, bandColor } from "./shared/bandEngine";
 import { surfaceTokens, TABULAR_NUMS } from "./shared/designTokens";
+import {
+    resolveCodexTheme, neonColorFor, neonShadow, ResolvedCodexTheme, flareHexFor, forcedInk,
+    isFxResolved,
+} from "./shared/codexThemeSettings";
 import { makeCornerBrackets, CardSignatureHandle } from "./shared/cardSignature";
 import { applyCardSignature } from "./shared/cardSignatureSettings";
 import { applyBorder } from "./shared/borderSettings";
 import { LicenseGate } from "./shared/licensing";
+import { settle } from "./shared/motion";
 
 // eslint-disable-next-line powerbi-visuals/no-http-string
 const BASIC_FILTER_SCHEMA = "http://powerbi.com/product/schema#basic";
+
+/** The stylesheet's own unselected-chip fill — a MIRROR of
+ * `style/visual.less` `.osb-period-chip { background: #f5f4f0 }`, not a new
+ * colour: the neon-lite branch sets no inline background, so this is the
+ * surface its ink is painted on (NEXUS cycle-11 §7). On an Auto-LIGHT render it
+ * never reaches the DOM; every other render replaces it with the resolved tone's
+ * track token and paints that inline (#819 rule 2 — see resolvedChipChromeFill). */
+const CHIP_SHEET_FILL_HEX = "#f5f4f0";
 
 /** Luminance-based theme pick (same 0.55 threshold convention as the
  * pbiKpiCard v3 pilot, Plan 15) — decides whether the resolved background
@@ -46,17 +59,19 @@ interface BasicFilter extends IFilter {
     $schema: string;
     target: { table: string; column: string };
     operator: string;
-    values: (string | number)[];
+    values: FilterValue[];
     filterType: number;
 }
 
 export class Visual implements IVisual {
+    private static instanceCount = 0;
+    private instanceId = ++Visual.instanceCount;
     private target: HTMLElement;
     private host: IVisualHost;
     private events: IVisualEventService;
     private localizationManager: ILocalizationManager;
     private selectionManager: ISelectionManager;
-    private formattingSettings: VisualFormattingSettingsModel;
+    private formattingSettings = new VisualFormattingSettingsModel();
     private formattingSettingsService: FormattingSettingsService;
 
     private tooltipService: ITooltipService;
@@ -68,8 +83,8 @@ export class Visual implements IVisual {
     private sections: SlicerSection[] = [];
     private cachedSections: SlicerSection[] | null = null;
 
-    /** Selection state per section: sectionName → selected labels */
-    private selections: Map<string, Set<string>> = new Map();
+    /** Selection state per section, keyed by typed filter value, never display text. */
+    private selections: Map<string, Set<FilterValue>> = new Map();
 
     // DOM
     private slicerRow: HTMLElement;
@@ -80,10 +95,19 @@ export class Visual implements IVisual {
 
     // Skip PBI-triggered re-render after we apply our own filters
     private selfFilterPending: boolean = false;
+    private pendingFilterSignature = "";
     private initialised: boolean = false;
+    private lastJsonFilters: unknown;
+    private externalConstraints: BasicFilter[] = [];
+    private acceptedSelections: Map<string, Set<FilterValue>> = new Map();
+    private filterError = false;
+    private sectionDefaults = new Map<string, { target: string; value: string }>();
 
     // Store reference to document click handler for cleanup in destroy()
     private documentClickHandler: (e: MouseEvent) => void;
+    private contextMenuHandler: (e: MouseEvent) => void;
+    private documentKeyHandler: (e: KeyboardEvent) => void;
+    private destroyed = false;
 
     // State for the Selected Chip Colour fx wiring (TRANS-04) — this
     // visual has no per-category selectionId concept (it drives external
@@ -93,6 +117,12 @@ export class Visual implements IVisual {
     // the per-instance categorical pattern.
     private chipColorHelper: ColorHelper | null = null;
     private resolvedChipColorHex: string = "#130064";
+    // #819 rule 1 — the selected-chip colour is an ACCENT (a selection mark),
+    // so the Neon flare re-tints it. UNLESS a conditional-formatting rule
+    // produced it: then its hue carries a value and is DATA, exempt from the
+    // flare. Same test Time Breakdown uses for `totalIsFx` — the resolved
+    // colour differs from the static pane value only when a rule resolved it.
+    private chipColorIsFx = false;
 
     // State for the Selected Chip TEXT Colour fx wiring (TEXT-02) — same
     // global/measure-level shape as chipColorHelper above (this visual has
@@ -100,6 +130,26 @@ export class Visual implements IVisual {
     // only, never the selection fill/border chrome (T-14-05/T-07-02).
     private chipTextColorHelper: ColorHelper | null = null;
     private resolvedChipTextColorHex: string = "#ffffff";
+    // #819 rule 3 — an fx-resolved ink is data and is exempt from the forced-
+    // mode override entirely (same `!totalIsFx` test as chipColorIsFx above).
+    private chipTextIsFx = false;
+
+    // NEXUS cycle-11 §7 (round 2). True when the report itself carries a
+    // chipTextColor object — i.e. the author opened the picker (or bound an
+    // fx rule to it). The review's correction line scopes this finding to the
+    // DEFAULT pair ("The sample uses explicit contrasting pairs; the default
+    // defect remains recorded"), so an explicit pick is never second-guessed:
+    // a saved report that set this colour renders exactly as it renders today.
+    private chipTextColorAuthored: boolean = false;
+    private labelColorAuthored = false;
+    private titleColorAuthored = false;
+    private resolvedLabelColorHex = "#5e5d5a";
+
+    // The opaque colour a viewer actually sees behind the bar: the Background
+    // card's colour at its own transparency, over whatever the host theme
+    // paints behind the tile. Ink legibility is judged against this, never
+    // against the raw picker hex (NEXUS review 2026-09-11, class 1).
+    private resolvedRootSurfaceHex: string = "#ffffff";
 
     // Custom in-iframe Title element (TITLE-01, shared _shared/formatting/
     // v2 standard) — persistent div above the slicer row, hidden unless
@@ -111,10 +161,27 @@ export class Visual implements IVisual {
     // Theme resolved from the shared Background card each render — chip and
     // dropdown renderers key surface tokens + glow strength off it.
     private resolvedTheme: Theme = "light";
+    // The surface an UNSELECTED chip is painted on (#819 rule 2). Auto keeps
+    // the stylesheet's own light chrome fill; a forced mode re-tones it to that
+    // mode's track token and paints it inline. Chip inks are judged against it.
+    private resolvedChipChromeFill: string = CHIP_SHEET_FILL_HEX;
+    // True only on an AUTO + LIGHT render, where the stylesheet's own chrome is
+    // already right and the chip renderer must set nothing inline (#819 pass 2).
+    private chipChromeIsSheet = true;
+    // Nexus Codex Theme (#819) — resolved ONCE per render in renderSlicerBar()
+    // and routed from there into the chip / dropdown / panel renderers, so the
+    // bar and its fan-out panel can never disagree about the mode. The field
+    // initialiser is the Auto identity (no card, no HC): it resolves to exactly
+    // the surface the visual derived on its own, so a render that somehow read
+    // it before renderSlicerBar() ran would still be today's render.
+    private resolvedCodex: ResolvedCodexTheme = resolveCodexTheme(undefined, {
+        hcActive: false, autoTheme: "light", autoBgHex: "#ffffff",
+        autoTransparencyPct: 0, behindHex: "#ffffff",
+    });
     // Per-section survivor sets when an EXTERNAL cross-filter has narrowed the
     // incoming dataView (section name → labels still present). Empty map when
     // no external filter is active. Drives the neon-lite/ghost chip states.
-    private externalAvail: Map<string, Set<string>> = new Map();
+    private externalAvail: Map<string, Set<FilterValue>> = new Map();
 
     private licenseGate: LicenseGate;
 
@@ -131,7 +198,7 @@ export class Visual implements IVisual {
 
             if (this.lastUpdateOptions) this.update(this.lastUpdateOptions);
 
-        });
+        }, "slicer-bar");
         this.host = options.host;
         this.events = options.host.eventService;
         this.localizationManager = options.host.createLocalizationManager();
@@ -181,19 +248,33 @@ export class Visual implements IVisual {
             }
         };
         document.addEventListener("click", this.documentClickHandler);
+        this.documentKeyHandler = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && this.activePanel) {
+                e.preventDefault();
+                this.closeAllDropdowns(true);
+            }
+        };
+        document.addEventListener("keydown", this.documentKeyHandler);
 
         // Context menu — right-click shows PBI context menu
-        this.target.addEventListener("contextmenu", (e: MouseEvent) => {
+        this.contextMenuHandler = (e: MouseEvent) => {
             this.selectionManager.showContextMenu({}, { x: e.clientX, y: e.clientY });
             e.preventDefault();
-        });
+        };
+        this.target.addEventListener("contextmenu", this.contextMenuHandler);
+        this.renderSlicerBar(this.target.clientWidth);
     }
 
     public update(options: VisualUpdateOptions): void {
+        if (this.destroyed) return;
         this.events.renderingStarted(options);
         this.lastUpdateOptions = options;
 
-        if (this.licenseGate.blockedThisFrame()) {
+        if (this.licenseGate.blockedThisFrame(options.dataViews)) {
+            // The fan-out panel lives on document.body, NOT under this.target, so
+            // hiding the root leaves it on screen with live handlers — NEXUS cycle-11
+            // §1 landed a second filter AFTER the denial. Tear it down first.
+            this.closeAllDropdowns();
             this.target.style.display = "none";
             this.events.renderingFinished(options);
             return;
@@ -201,6 +282,8 @@ export class Visual implements IVisual {
         this.target.style.display = "";
 
         if (!options?.dataViews?.[0]) {
+            this.resetData();
+            this.renderSlicerBar(options.viewport.width);
             this.events.renderingFinished(options);
             return;
         }
@@ -240,6 +323,9 @@ export class Visual implements IVisual {
             );
             this.resolvedChipColorHex = this.chipColorHelper.getColorForMeasure(dv.metadata?.objects, "chipColor")
                 ?? chipFmt.chipColor.value.value;
+            // A rule resolved it iff it differs from the static pane value —
+            // the ONE suite-wide fx test (shared isFxResolved), not a local idiom.
+            this.chipColorIsFx = isFxResolved(this.resolvedChipColorHex, chipFmt.chipColor.value.value);
 
             // ─── fx wiring — Selected Chip Text Colour (TEXT-02) ────────
             // Same global/measure-level pattern as chipColor above:
@@ -259,25 +345,55 @@ export class Visual implements IVisual {
             );
             this.resolvedChipTextColorHex = this.chipTextColorHelper.getColorForMeasure(dv.metadata?.objects, "chipTextColor")
                 ?? chipFmt.chipTextColor.value.value;
+            this.chipTextIsFx = isFxResolved(this.resolvedChipTextColorHex, chipFmt.chipTextColor.value.value);
+            // Did the report SET this ink, or is it still the declared default?
+            // dataView.metadata.objects is the same bag populateFormattingSettingsModel
+            // and getColorForMeasure both read, so its slicerBar.chipTextColor
+            // entry exists if and only if the author persisted one.
+            const chipTextObject = (dv.metadata?.objects as any)?.slicerBar?.chipTextColor;
+            this.chipTextColorAuthored = chipTextObject !== undefined && chipTextObject !== null;
+            this.labelColorAuthored = (dv.metadata?.objects as any)?.slicerBar?.labelColor != null;
+            this.titleColorAuthored = (dv.metadata?.objects as any)?.titleSettings?.titleColor != null;
 
-            const parsed = parseDataView(dv);
+            const parsed = parseDataView(dv, this.host.locale);
+            if (!parsed.length) {
+                this.resetData();
+                this.renderSlicerBar(options.viewport.width);
+                this.events.renderingFinished(options);
+                return;
+            }
 
-            // Per-section cache: keep the fullest set of items ever seen for each
-            // section. This lets us preserve our own slicer options after applying
-            // our own filter (which shrinks the dataView), while still letting
-            // EXTERNAL filters from other visuals/slicers narrow the displayed
-            // items (the filter-in certification requirement).
+            // Reconcile host state before attributing a narrowed domain to our
+            // own selection. Missing sections may still be external survivors.
+            this.sections = [...parsed, ...(this.cachedSections || []).filter(c =>
+                !parsed.some(ps => ps.name === c.name))];
+            this.readAppliedFilters(options);
+            let domainSelectionChanged = false;
             const nextCache: SlicerSection[] = [];
             const parsedByName = new Map<string, SlicerSection>();
             for (const ps of parsed) parsedByName.set(ps.name, ps);
 
             for (const ps of parsed) {
                 const cached = this.cachedSections?.find(c => c.name === ps.name);
-                if (cached && cached.items.length > ps.items.length) {
-                    // Merge: keep previously-seen fullest items as cache
-                    nextCache.push({ ...ps, items: cached.items });
+                const sameTarget = cached && JSON.stringify(cached.filterTarget) === JSON.stringify(ps.filterTarget);
+                const cachedValues = new Set(cached?.items.map(item => item.rawValue));
+                const subset = sameTarget && ps.items.every(item => cachedValues.has(item.rawValue));
+                if (cached && subset && cached.items.length > ps.items.length) {
+                    const fresh = new Map(ps.items.map(item => [item.rawValue, item]));
+                    const items = cached.items.map(item => fresh.get(item.rawValue) || item)
+                        .sort((a, b) => a.sort - b.sort);
+                    nextCache.push({ ...ps, items, sectionSort: Math.min(...items.map(item => item.sort)) });
                 } else {
                     nextCache.push(ps);
+                    const selected = this.selections.get(ps.name);
+                    if (cached && selected?.size) {
+                        const values = new Set(ps.items.map(item => item.rawValue));
+                        const retained = new Set([...selected].filter(value => sameTarget && values.has(value)));
+                        if (retained.size !== selected.size) {
+                            this.selections.set(ps.name, retained);
+                            domainSelectionChanged = true;
+                        }
+                    }
                 }
             }
             // Preserve cached sections that VANISHED from this update entirely —
@@ -309,7 +425,7 @@ export class Visual implements IVisual {
             this.sections = nextCache.map(c => {
                 const ps = parsedByName.get(c.name);
                 const ownSel = this.selections.get(c.name);
-                if (ownSel && ownSel.size > 0) {
+                if (ownSel?.size && ps?.items.every(item => ownSel.has(item.rawValue))) {
                     return c;
                 }
                 if (!ps) {
@@ -319,7 +435,7 @@ export class Visual implements IVisual {
                     return c;
                 }
                 if (c.items.length > ps.items.length) {
-                    this.externalAvail.set(c.name, new Set(ps.items.map(i => i.label)));
+                    this.externalAvail.set(c.name, new Set(ps.items.map(i => i.rawValue)));
                     return c;
                 }
                 return ps;
@@ -328,32 +444,33 @@ export class Visual implements IVisual {
             // Apply formatting panel defaults where data doesn't specify
             this.applyFormattingDefaults();
 
-            if (this.selfFilterPending) {
+            {
                 this.selfFilterPending = false;
-            } else {
-                // Read filters on every update to respond to cross-filtering from other visuals
-                this.readAppliedFilters(options);
 
-                // Auto-select defaults only on first init
-                if (!this.initialised) {
-                    this.initialised = true;
-                    let appliedAnyDefault = false;
-                    for (const section of this.sections) {
-                        if (!section.defaultValue) continue;
-                        const sel = this.selections.get(section.name);
-                        if (sel && sel.size > 0) continue;
-                        const match = section.items.find(
-                            item => item.label.toLowerCase() === section.defaultValue.toLowerCase()
-                        );
-                        if (match) {
-                            this.selections.set(section.name, new Set([match.label]));
-                            if (section.filterTarget) appliedAnyDefault = true;
+                this.initialised = true;
+                let defaultsChanged = false;
+                for (const section of this.sections) {
+                    const target = JSON.stringify(section.filterTarget);
+                    const previous = this.sectionDefaults.get(section.name);
+                    this.sectionDefaults.set(section.name, { target, value: section.defaultValue });
+                    const rebound = previous && previous.target !== target;
+                    const changed = previous && previous.value !== section.defaultValue;
+                    if (!previous || rebound || changed) {
+                        if (previous) {
+                            this.selections.delete(section.name);
+                            defaultsChanged = true;
+                        } else if (this.selections.get(section.name)?.size) {
+                            continue;
                         }
-                    }
-                    if (appliedAnyDefault) {
-                        this.applyAllFilters();
+                        if (!section.defaultValue) continue;
+                        const match = section.items.find(item =>
+                            item.label.toLowerCase() === section.defaultValue.toLowerCase());
+                        if (!match) continue;
+                        this.selections.set(section.name, new Set([match.rawValue]));
+                        defaultsChanged = true;
                     }
                 }
+                if (defaultsChanged || domainSelectionChanged) this.applyAllFilters();
             }
 
             this.renderSlicerBar(options.viewport.width);
@@ -364,7 +481,26 @@ export class Visual implements IVisual {
     }
 
     public getFormattingModel(): powerbi.visuals.FormattingModel {
+        this.formattingSettings.codexTheme.reveal();
         return this.formattingSettingsService.buildFormattingModel(this.formattingSettings);
+    }
+
+    private resetData(): void {
+        const hadFilters = [...this.selections.values()].some(values => values.size > 0)
+            || this.externalConstraints.length > 0;
+        this.closeAllDropdowns();
+        this.sections = [];
+        this.cachedSections = null;
+        this.selections.clear();
+        this.acceptedSelections.clear();
+        this.externalAvail.clear();
+        this.externalConstraints = [];
+        this.sectionDefaults.clear();
+        this.lastJsonFilters = undefined;
+        this.initialised = false;
+        this.slicerRow.replaceChildren();
+        this.titleEl.style.display = "none";
+        if (hadFilters) this.applyAllFilters();
     }
 
     /* ═══════════════════════════════════════
@@ -377,7 +513,7 @@ export class Visual implements IVisual {
         const globalSelection = String(s.defaultSelectionMode.value.value || "single");
 
         for (const section of this.sections) {
-            if (section.displayMode !== "chips" && section.displayMode !== "dropdown") {
+            if (!section.displayModeFromData) {
                 if (globalDisplay === "chips" || globalDisplay === "dropdown") {
                     section.displayMode = globalDisplay;
                 } else {
@@ -385,7 +521,7 @@ export class Visual implements IVisual {
                         ? "chips" : "dropdown";
                 }
             }
-            if (section.selectionMode !== "single" && section.selectionMode !== "multi") {
+            if (!section.selectionModeFromData) {
                 section.selectionMode = globalSelection;
             }
         }
@@ -396,10 +532,44 @@ export class Visual implements IVisual {
      * ═══════════════════════════════════════ */
 
     private renderSlicerBar(viewportWidth: number): void {
+        const focusKey = (document.activeElement as HTMLElement)?.dataset?.focusKey
+            || (this.activePanel?.contains(document.activeElement)
+                ? JSON.stringify(["dropdown", this.openDropdownId]) : undefined);
+        this.closeAllDropdowns();
         const s = this.formattingSettings.slicerBarCard;
         const hc = this.isHighContrast;
         const fg = hc ? this.colorPalette.foreground.value : "";
         const bg = hc ? this.colorPalette.background.value : "";
+        const background = this.formattingSettings.background;
+        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
+        const outerBgTransparencyPct = background.transparency.value ?? 0;
+        const behindHex = this.colorPalette.background?.value || "#ffffff";
+        const autoSurfaceHex = compositeOver(outerBgHex, outerBgTransparencyPct, behindHex);
+        // ─── Nexus Codex Theme (#819): ONE switch above the automatic pick ──
+        // Auto returns exactly the surface/theme derived here, so a report that
+        // never touched the card renders byte-for-byte as before; Dark/Light/
+        // Neon paint the Codex surface at the card's own Surface Transparency
+        // and force the token set. High contrast already collapsed to Auto
+        // inside the resolver — no HC branch of our own.
+        const autoTheme: Theme = themeFor(autoSurfaceHex);
+        const codex = resolveCodexTheme(this.formattingSettings.codexTheme, {
+            hcActive: hc, autoTheme, autoBgHex: outerBgHex,
+            autoTransparencyPct: outerBgTransparencyPct, behindHex,
+        });
+        this.resolvedCodex = codex;
+        // #819 rule 3 — a forced mode GUARDS the text inks against its own
+        // composited surface rather than replacing them: an explicit label/title
+        // colour survives if it still reads 4.5:1 there, otherwise the mode's
+        // default ink takes over. `forcedInk` is the one suite rule; the mode
+        // default handed to it stays `defaultInk(surface, userValue)` so Auto is
+        // byte-identical. The chip/band/fx colours stay the user's.
+        this.resolvedRootSurfaceHex = codex.surfaceHex;
+        const rootInk = this.defaultInk(this.resolvedRootSurfaceHex);
+        const secondaryInk = mutedInk(rootInk, this.resolvedRootSurfaceHex);
+        const labelSet = s.labelColor.value.value;
+        this.resolvedLabelColorHex = forcedInk(labelSet,
+            this.defaultInk(this.resolvedRootSurfaceHex, labelSet), codex, !this.labelColorAuthored);
+        this.target.style.color = hc ? fg : rootInk;
         const maxSections = s.maxVisibleSections.value || 10;
         let sectionCount = 0;
 
@@ -426,9 +596,8 @@ export class Visual implements IVisual {
             // swaps to the dark text token on dark surfaces (theme keyed off
             // the shared Background card, same source as the v3 theme pick below).
             const setTitle = titleFmt.titleColor?.value?.value || "#1a1a2e";
-            const adaptiveTitle = setTitle === "#1a1a2e"
-                && themeFor(this.formattingSettings.background.backgroundColor.value?.value ?? "#ffffff") === "dark"
-                ? surfaceTokens("dark").text : setTitle;
+            const adaptiveTitle = forcedInk(setTitle,
+                this.defaultInk(this.resolvedRootSurfaceHex, setTitle), codex, !this.titleColorAuthored);
             this.titleEl.style.color = hc ? fg : adaptiveTitle;
             this.titleEl.style.display = "";
             if (titleInline) {
@@ -465,24 +634,50 @@ export class Visual implements IVisual {
         // the host tile visible above/below the bar = "multiple backgrounds".
         // Paint the full-height ROOT instead and keep the bar row transparent,
         // so a single background fills the tile.
-        const background = this.formattingSettings.background;
-        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
-        const outerBgTransparencyPct = background.transparency.value ?? 0;
-        this.target.style.background = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
+        this.target.style.background = hc ? bg : toRgba(codex.bgHex, codex.transparencyPct);
+        // The bar row is transparent, so every chip painted below sits on THIS
+        // composited surface — the Background card over the host theme's
+        // background. Cached for legibleChipInk() (NEXUS cycle-11 §7).
         this.slicerRow.style.background = "transparent";
-        this.slicerRow.style.width = viewportWidth + "px";
+        this.slicerRow.style.width = "100%";
 
         // v3 theme pick (LOOK-05) — drives the CSS-only cyan hover ring and
         // the magenta clear-all hover via custom properties (visual.less);
         // per-instance "selected" chip colour is still resolved through the
         // existing fx-wired pickers below (D-16).
-        const theme: Theme = themeFor(outerBgHex);
+        const theme: Theme = codex.theme;
         this.resolvedTheme = theme;
         const surf = surfaceTokens(theme);
         const accentHex = accentToken(theme);
         const dangerHex = bandColor("danger", theme);
-        this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentHex);
+        // Neon, scope "flare": the hover-ring ACCENT takes the flare colour
+        // (scope "all" leaves it in its own hue). The danger token stays the
+        // band colour either way — clear-all-hover is semantic, not decorative.
+        const accentFlareHex = neonColorFor(accentHex, codex);
+        // #819 rule 2 — the UNSELECTED chip's fill is chrome, not data: the
+        // stylesheet authored it for the LIGHT tone (`.osb-period-chip
+        // { background:#f5f4f0 }`), so anything rendering on a dark surface
+        // re-tones it to that tone's track token and the chip inks are judged
+        // against THAT.
+        // Pass 2 re-bless (Neil 2026-09-12): the test is the RESOLVED TONE, not
+        // the mode. Auto on a dark composited card (a white bar at 100%
+        // transparency over a dark page — the dropdown panel has keyed off
+        // `resolvedTheme` since a5dee9f) was still painting the light sheet
+        // chrome, so an Auto-dark bar had light pills on a dark card. Only an
+        // AUTO + LIGHT render keeps the sheet's own fill and sets nothing
+        // inline; every other render paints the tone's track token. Forced
+        // modes are unchanged — a forced LIGHT card must keep taking
+        // surfaceTokens("light").track (#e2e4ef), not the sheet's #f5f4f0.
+        this.chipChromeIsSheet = codex.mode === "auto" && theme === "light";
+        this.resolvedChipChromeFill = this.chipChromeIsSheet ? CHIP_SHEET_FILL_HEX : surf.track;
+        this.slicerRow.style.setProperty("--codex-accent", hc ? fg : accentFlareHex);
         this.slicerRow.style.setProperty("--codex-danger", hc ? fg : dangerHex);
+        this.slicerRow.style.setProperty("--osb-chip-hover-ink", hc ? fg : this.defaultInk(this.resolvedChipChromeFill, accentFlareHex));
+        this.slicerRow.style.setProperty("--osb-separator", hc ? fg : surf.border);
+        // Same rule for the row's own 3px overflow scrollbar — the sheet's
+        // rgba(0,0,0,.15) thumb is invisible on a forced dark card.
+        if (codex.mode === "auto") this.slicerRow.style.removeProperty("scrollbar-color");
+        else this.slicerRow.style.setProperty("scrollbar-color", `${surf.track} transparent`);
 
         // ─── Suite chrome: Border card + Corner Accents on the full-tile root.
         // (The shared modules were vendored earlier as "source only — rebuild
@@ -496,21 +691,33 @@ export class Visual implements IVisual {
             metadataObjects: undefined,
         });
         applyCardSignature(this.cornerSignature, this.formattingSettings.cardSignature, {
-            autoHex: accentHex,
+            autoHex: accentFlareHex,
+            flareHex: flareHexFor(codex),
             hcActive: hc,
             hcColor: fg,
             mirror: true,
-            glowMix: hc ? 0 : (theme === "dark" ? 55 : 0),
+            // Existing glow site #1 — under Neon the card's Glow Strength IS
+            // the budget (pilot glowMix idiom); otherwise the surface decides.
+            glowMix: hc ? 0 : codex.neon ? codex.glow : (theme === "dark" ? 55 : 0),
             muted: false,
         });
 
         // Right-justify the bar when fan direction is left
         const dir = String(s.fanDirection.value.value || "auto");
-        this.slicerRow.style.justifyContent = dir === "left" ? "flex-end" : "";
+        this.slicerRow.style.justifyContent = dir === "left" ? "safe flex-end" : "";
 
-        for (const section of this.sections) {
-            if (sectionCount >= maxSections) break;
+        // "Max visible sections" caps how wide the bar gets, but a section it
+        // hid could still hold an active selection — a configured default, or
+        // one restored from the host — and that selection is still emitted as a
+        // filter. The bar then announced "1 active" for a filter with no
+        // visible control to see, change or clear (NEXUS cycle-11 §4, case
+        // `default-hidden-section`). A section that is filtering the report is
+        // therefore always rendered; the cap still hides every section that
+        // filters nothing, and the emitted filter set is unchanged either way.
+        const visibleSections = this.sections.filter((section, index) =>
+            index < maxSections || (this.selections.get(section.name)?.size || 0) > 0);
 
+        for (const section of visibleSections) {
             if (sectionCount > 0) {
                 const sep = document.createElement("span");
                 sep.className = "osb-slicer-sep";
@@ -522,12 +729,11 @@ export class Visual implements IVisual {
             const label = document.createElement("span");
             label.className = "osb-slicer-label";
             label.textContent = section.name.toUpperCase() + ":";
-            label.style.color = hc ? fg : s.labelColor.value.value;
+            label.style.color = hc ? fg : this.resolvedLabelColorHex;
             label.style.fontSize = s.labelFontSize.value + "px";
-            // Section label text treatment (TEXT-01) — bold-off falls back
-            // to the surface's own pre-existing hardcoded weight 600.
+            // Bold-off is normal weight, not the stylesheet's semibold fallback.
             label.style.fontFamily = s.labelFontFamily?.value || "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
-            label.style.fontWeight = this.weightFor(s.labelBold?.value, "600");
+            label.style.fontWeight = this.weightFor(s.labelBold?.value, "400");
             label.style.fontStyle = s.labelItalic?.value ? "italic" : "normal";
             label.style.textDecoration = s.labelUnderline?.value ? "underline" : "none";
             this.slicerRow.appendChild(label);
@@ -536,14 +742,15 @@ export class Visual implements IVisual {
             // interactive filter group, dims at zero. Derived entirely from
             // this.selections (no new format-pane property).
             if (section.interactive) {
-                const groupSel = this.selections.get(section.name) || new Set<string>();
+                const groupSel = this.selections.get(section.name) || new Set<FilterValue>();
                 const countBadge = document.createElement("span");
                 countBadge.className = "osb-chip-count";
                 countBadge.textContent = String(groupSel.size);
                 countBadge.style.fontFeatureSettings = TABULAR_NUMS;
-                countBadge.style.color = hc ? fg : (groupSel.size > 0 ? accentHex : surf.muted);
+                countBadge.style.color = hc ? fg : (groupSel.size > 0
+                    ? this.defaultInk(this.resolvedRootSurfaceHex, accentHex) : secondaryInk);
                 countBadge.style.borderColor = hc ? fg : surf.border;
-                countBadge.style.opacity = groupSel.size > 0 ? "1" : "0.35";
+                countBadge.style.opacity = "1";
                 this.slicerRow.appendChild(countBadge);
             }
 
@@ -569,8 +776,9 @@ export class Visual implements IVisual {
 
             const clearAllBtn = document.createElement("button");
             clearAllBtn.className = "osb-clear-all";
+            clearAllBtn.dataset.focusKey = "clear-all";
             clearAllBtn.textContent = "✕ " + this.localizationManager.getDisplayName("Clear_All");
-            clearAllBtn.style.color = hc ? fg : surf.muted;
+            clearAllBtn.style.color = hc ? fg : secondaryInk;
             clearAllBtn.addEventListener("click", (e: MouseEvent) => {
                 e.stopPropagation();
                 for (const clearSection of this.sections) {
@@ -587,8 +795,20 @@ export class Visual implements IVisual {
             totalEl.className = "osb-total-active";
             totalEl.textContent = `${totalActive} active`;
             totalEl.style.fontFeatureSettings = TABULAR_NUMS;
-            totalEl.style.color = hc ? fg : surf.muted;
+            totalEl.style.color = hc ? fg : secondaryInk;
             this.slicerRow.appendChild(totalEl);
+        }
+        if (this.filterError) {
+            const error = document.createElement("span");
+            error.className = "osb-filter-error";
+            error.setAttribute("role", "status");
+            error.textContent = "Filter could not be applied.";
+            error.style.color = hc ? fg : contrastInk(this.resolvedRootSurfaceHex, "#000000", "#ffffff");
+            this.slicerRow.appendChild(error);
+        }
+        if (focusKey) {
+            Array.from(this.target.querySelectorAll<HTMLElement>("[data-focus-key]"))
+                .find(element => element.dataset.focusKey === focusKey)?.focus();
         }
     }
 
@@ -601,16 +821,62 @@ export class Visual implements IVisual {
             const staticText = document.createElement("span");
             staticText.className = "osb-static-value";
             staticText.textContent = item.value || item.label;
-            staticText.style.color = hc ? fg : s.labelColor.value.value;
+            staticText.style.color = hc ? fg : this.resolvedLabelColorHex;
             staticText.style.fontSize = s.labelFontSize.value + "px";
             this.slicerRow.appendChild(staticText);
         }
+    }
+
+    /**
+     * Selected Chip Text Colour, judged against the surface it is actually
+     * painted on.
+     *
+     * NEXUS cycle-11 §7 — "make the default foreground/background pair legible
+     * on both ring chips and filled dropdown items". The declared defaults pair
+     * Selected chip #00d9ff with Selected chip text #00d9ff (settings.ts)
+     * because v2 reads that pair as "ring + matching text" on the CHIP; the
+     * dropdown item paints the same colour as a real fill, so the label lands in
+     * its own fill's colour. Round 1 rescued only an EXACT collapse
+     * (ink === composited fill), which is the wrong test: legibility is a
+     * CONTRAST question. Measured on the round-1 bundle, a fill nudged one
+     * channel (#00d9ff ink on a #00d8fe fill) still scored 1.009:1, a fully
+     * transparent fill left cyan on the white panel at 1.698:1, and the ring
+     * chip on the default light background — which round 1 never touched at
+     * all — sat at 1.453:1.
+     *
+     * So: keep the declared default wherever it already clears WCAG 4.5:1 on the
+     * composited surface (the cyan-on-dark neon ring every dark report ships
+     * today measures 11.808:1 and is untouched), and only where it does not,
+     * fall back to contrastInk() against that same surface. An ink the AUTHOR
+     * set is returned unchanged either way — legible or not, it is theirs.
+     */
+    private legibleChipInk(surfaceHex: string): string {
+        const ink = String(this.resolvedChipTextColorHex ?? "");
+        // #819 rule 3 — an fx-resolved ink is DATA: a conditional-formatting
+        // rule chose it per value, so no forced mode may override it.
+        if (this.chipTextIsFx) return ink;
+        // Otherwise the one suite rule (forcedInk): Auto returns an explicit
+        // ink untouched and a default ink adaptively; a forced mode KEEPS an
+        // explicit ink that still reads 4.5:1 and falls back only when it does
+        // not. The guard is judged against the surface this chip is actually
+        // painted on — the ring chip's tint or the dropdown item's fill — not
+        // the root, which is why the resolved theme is passed with that
+        // surface substituted (NEXUS cycle-11 §7, class 1).
+        // defaultInk() is the mode's own default here: surfaceTokens("light")
+        // .text is the ink for LIGHT surfaces and surfaceTokens("dark").text
+        // for DARK ones, the (surface, darkInk, lightInk) order contrastInk
+        // expects, with a black/white last resort.
+        return forcedInk(ink, this.defaultInk(surfaceHex, ink),
+            { ...this.resolvedCodex, surfaceHex }, !this.chipTextColorAuthored);
     }
 
     /* ─── Chips Section ─── */
 
     private renderChipsSection(section: SlicerSection, s: any): void {
         const hc = this.isHighContrast;
+        // The ONE theme object resolved for this render (#819) — never
+        // re-resolved per renderer.
+        const codex = this.resolvedCodex;
         const fg = hc ? this.colorPalette.foreground.value : "";
         const bg = hc ? this.colorPalette.background.value : "";
         const fgSelected = hc && (this.colorPalette as any).foregroundSelected
@@ -618,18 +884,20 @@ export class Visual implements IVisual {
         const maxVisible = s.maxVisibleChips.value || 8;
         const visible = section.items.slice(0, maxVisible);
         const overflow = section.items.slice(maxVisible);
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
 
         for (const item of visible) {
             const chip = document.createElement("button");
             chip.className = "osb-period-chip";
+            chip.dataset.focusKey = JSON.stringify(["chip", section.name, item.rawValue]);
+            chip.setAttribute("aria-pressed", String(sel.has(item.rawValue)));
             chip.textContent = item.label;
             // Chip text treatment (TEXT-01) — bold-off falls back to the
             // chip's own pre-existing hardcoded weight 500. Applies to
             // text only; selection fill/border chrome below is untouched.
             this.applyChipFont(chip, s, "500");
 
-            if (sel.has(item.label)) {
+            if (sel.has(item.rawValue)) {
                 chip.classList.add("selected");
                 if (hc) {
                     // HC keeps the pre-existing solid-fill inversion (fg
@@ -654,21 +922,57 @@ export class Visual implements IVisual {
                     // --glowmix drop on the light canvas — full neon on a
                     // pale surface reads as smudge, not glow).
                     const chipTransparencyPct = s.chipTransparency.value ?? 0;
+                    // Existing glow site #2 — under Neon the card's Glow
+                    // Strength replaces the surface-derived multiplier as this
+                    // stack's budget; Auto/Dark/Light keep today's factor.
                     const glowPct = Math.max(0, 100 - chipTransparencyPct)
-                        * (this.resolvedTheme === "dark" ? 1 : 0.55);
+                        * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
+                    // Scope "flare" re-tints the ring/glow with the flare
+                    // colour; scope "all" (and every non-Neon mode) leaves the
+                    // user's own chip colour in place. #819 rule 1: a chip
+                    // colour a conditional-formatting rule produced is DATA and
+                    // keeps its own hue under every scope — it only glows in it.
+                    const chipFlareHex = this.chipColorIsFx
+                        ? this.resolvedChipColorHex : neonColorFor(this.resolvedChipColorHex, codex);
                     const mix = (pct: number) =>
-                        `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
+                        `color-mix(in srgb, ${chipFlareHex} ${Math.round(Math.min(100, pct))}%, transparent)`;
+                    const tintPct = Math.round(Math.min(100, glowPct * 0.12));
                     chip.style.background = mix(glowPct * 0.12);
-                    chip.style.color = this.resolvedChipTextColorHex;
-                    chip.style.borderColor = this.resolvedChipColorHex;
+                    // The ring chip's visible surface is that faint accent tint
+                    // over the bar's own composited background — the "ring
+                    // chips" half of NEXUS cycle-11 §7.
+                    chip.style.color = this.legibleChipInk(compositeOver(
+                        chipFlareHex, 100 - tintPct, this.resolvedRootSurfaceHex));
+                    chip.style.borderColor = chipFlareHex;
+                    // Neon adds the shared wide halo (neonShadow) on TOP of the
+                    // existing ring — the SELECTED chip is this visual's
+                    // primary mark. Nothing else in the bar gains a new glow.
+                    const neonHalo = codex.neon && codex.glow > 0
+                        ? `, ${neonShadow(chipFlareHex, codex.glow)}` : "";
                     chip.style.boxShadow =
                         `0 0 14px ${mix(glowPct)}, ` +
                         `0 0 4px ${mix(glowPct)}, ` +
-                        `inset 0 0 8px ${mix(glowPct * 0.35)}`;
+                        `inset 0 0 8px ${mix(glowPct * 0.35)}` + neonHalo;
                     chip.style.textShadow = `0 0 8px ${mix(glowPct * 0.8)}`;
                     chip.style.fontWeight = "700";
                 }
             } else {
+                if (hc) {
+                    chip.style.background = bg;
+                    chip.style.color = fg;
+                    chip.style.borderColor = fg;
+                } else if (!this.chipChromeIsSheet) {
+                    // #819 rule 2 — chrome, not data: on any surface but an
+                    // Auto-LIGHT one the chip pill takes the resolved tone's
+                    // track token, border token and a legible muted ink instead
+                    // of the stylesheet's light #f5f4f0 / #e8e2d3 / #5e5d5a
+                    // trio. Auto + light sets nothing here (see the
+                    // chipChromeIsSheet derivation in renderSlicerBar).
+                    const surf = surfaceTokens(this.resolvedTheme);
+                    chip.style.background = this.resolvedChipChromeFill;
+                    chip.style.borderColor = surf.border;
+                    chip.style.color = this.defaultInk(this.resolvedChipChromeFill, surf.muted);
+                }
                 // Unselected chip under an active EXTERNAL cross-filter
                 // (another visual narrowed this section): survivors get a
                 // neon-lite ring (~40% of the selected glow), filtered-out
@@ -677,11 +981,23 @@ export class Visual implements IVisual {
                 // would hurt contrast) and when no external filter is live.
                 const avail = this.externalAvail.get(section.name);
                 if (avail && !hc) {
-                    if (avail.has(item.label)) {
-                        const litePct = 40 * (this.resolvedTheme === "dark" ? 1 : 0.55);
-                        const liteMix = `color-mix(in srgb, ${this.resolvedChipColorHex} ${Math.round(litePct)}%, transparent)`;
-                        chip.style.borderColor = this.resolvedChipColorHex;
-                        chip.style.color = this.resolvedChipTextColorHex;
+                    if (avail.has(item.rawValue)) {
+                        // Existing glow site #3 (cross-filter survivor ring) —
+                        // same budget rule as the selected chip, at 40%.
+                        const litePct = 40
+                            * (codex.neon ? codex.glow / 100 : (this.resolvedTheme === "dark" ? 1 : 0.55));
+                        // Same rule-1 fx guard as the selected chip above.
+                        const liteFlareHex = this.chipColorIsFx
+                            ? this.resolvedChipColorHex : neonColorFor(this.resolvedChipColorHex, codex);
+                        const liteMix = `color-mix(in srgb, ${liteFlareHex} ${Math.round(litePct)}%, transparent)`;
+                        chip.style.borderColor = liteFlareHex;
+                        // This branch paints no fill of its own, so the
+                        // neon-lite survivor sits on the chip's chrome fill —
+                        // the stylesheet's #f5f4f0 on an Auto-LIGHT render, the
+                        // resolved tone's track token on every other (#819 rule
+                        // 2 + the pass-2 re-bless). That, not the accent, is the
+                        // surface its ink must be legible on (§7).
+                        chip.style.color = this.legibleChipInk(this.resolvedChipChromeFill);
                         chip.style.boxShadow = `0 0 8px ${liteMix}`;
                     } else {
                         chip.style.opacity = "0.35";
@@ -712,12 +1028,13 @@ export class Visual implements IVisual {
 
             chip.addEventListener("click", (e: MouseEvent) => {
                 e.stopPropagation();
-                this.onChipClick(section, item.label);
+                this.onChipClick(section, item.rawValue);
             });
             chip.addEventListener("keydown", (e: KeyboardEvent) => {
+                this.navigateOptions(e, Array.from(this.slicerRow.querySelectorAll<HTMLElement>(".osb-period-chip")));
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    this.onChipClick(section, item.label);
+                    this.onChipClick(section, item.rawValue);
                 }
             });
 
@@ -729,28 +1046,34 @@ export class Visual implements IVisual {
                 `+${overflow.length} more`,
                 `${section.name}_overflow`,
                 (panel: HTMLElement) => {
-                    this.buildDropdownItems(panel, section, overflow);
+                    const items = document.createElement("div");
+                    items.className = "osb-panel-items";
+                    this.buildDropdownItems(items, section, overflow);
+                    panel.appendChild(items);
                 }
             );
             this.slicerRow.appendChild(group);
         }
     }
 
-    private onChipClick(section: SlicerSection, label: string): void {
-        const sel = this.selections.get(section.name) || new Set<string>();
+    private onChipClick(section: SlicerSection, value: FilterValue): void {
+        // A blocked visual must not mutate selection state. Chips can survive a
+        // denial that arrives mid-session (NEXUS cycle-11 §1).
+        if (this.licenseGate.blocked) return;
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
 
         if (section.selectionMode === "single") {
-            if (sel.has(label) && sel.size === 1) {
+            if (sel.has(value) && sel.size === 1) {
                 sel.clear();
             } else {
                 sel.clear();
-                sel.add(label);
+                sel.add(value);
             }
         } else {
-            if (sel.has(label)) {
-                sel.delete(label);
+            if (sel.has(value)) {
+                sel.delete(value);
             } else {
-                sel.add(label);
+                sel.add(value);
             }
         }
 
@@ -762,17 +1085,19 @@ export class Visual implements IVisual {
     /* ─── Dropdown Section ─── */
 
     private renderDropdownSection(section: SlicerSection, s: any): void {
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
         const count = sel.size;
+        const selectedLabel = section.items.find(item => item.rawValue === Array.from(sel)[0])?.label
+            ?? String(Array.from(sel)[0] ?? "(Blank)");
 
         let triggerLabel: string;
         if (section.selectionMode === "single") {
-            triggerLabel = count === 1 ? Array.from(sel)[0] : `Select ${section.name.toLowerCase()}`;
+            triggerLabel = count === 1 ? selectedLabel : `Select ${section.name.toLowerCase()}`;
         } else {
             if (count === 0 || count === section.items.length) {
                 triggerLabel = `All ${section.name.toLowerCase()}`;
             } else if (count === 1) {
-                triggerLabel = Array.from(sel)[0];
+                triggerLabel = selectedLabel;
             } else {
                 triggerLabel = `${count} selected`;
             }
@@ -781,7 +1106,7 @@ export class Visual implements IVisual {
         // Build shortLabel text from selected items
         let shortLabelText = "";
         if (count > 0) {
-            const selectedItems = section.items.filter(i => sel.has(i.label));
+            const selectedItems = section.items.filter(i => sel.has(i.rawValue));
             const labels = selectedItems.map(i => i.shortLabel).filter(sl => sl);
             if (labels.length > 0) {
                 shortLabelText = labels.join(", ");
@@ -800,6 +1125,7 @@ export class Visual implements IVisual {
                     searchInput.addEventListener("click", (e) => e.stopPropagation());
                     searchInput.addEventListener("input", () => {
                         this.buildDropdownItems(itemsContainer, section, null, searchInput.value);
+                        this.applyPanelColors(panel);
                     });
                     panel.appendChild(searchInput);
                 }
@@ -813,7 +1139,7 @@ export class Visual implements IVisual {
                     selectAll.textContent = this.localizationManager.getDisplayName("Select_All");
                     selectAll.addEventListener("click", (e: MouseEvent) => {
                         e.stopPropagation();
-                        this.selections.set(section.name, new Set(section.items.map(i => i.label)));
+                        this.selections.set(section.name, new Set(section.items.map(i => i.rawValue)));
                         this.applySectionFilter(section);
                         this.closeAllDropdowns();
                         this.renderSlicerBar(this.target.clientWidth);
@@ -850,7 +1176,8 @@ export class Visual implements IVisual {
             const subtitle = document.createElement("span");
             subtitle.className = "osb-short-label";
             subtitle.textContent = shortLabelText;
-            subtitle.style.color = hc ? fg : s.labelColor.value.value;
+            subtitle.style.color = hc ? fg : this.resolvedLabelColorHex;
+            subtitle.style.opacity = "1";
             subtitle.style.fontSize = (s.labelFontSize.value - 1) + "px";
             this.slicerRow.appendChild(subtitle);
         }
@@ -863,7 +1190,7 @@ export class Visual implements IVisual {
         filter?: string
     ): void {
         while (container.firstChild) { container.removeChild(container.firstChild); }
-        const sel = this.selections.get(section.name) || new Set<string>();
+        const sel = this.selections.get(section.name) || new Set<FilterValue>();
         let renderItems = items || section.items;
 
         if (filter) {
@@ -875,11 +1202,16 @@ export class Visual implements IVisual {
         // composite; bold-off falls back to the item's own pre-existing
         // hardcoded weight 600.
         const s = this.formattingSettings.slicerBarCard;
+        container.setAttribute("role", section.selectionMode === "single" ? "listbox" : "group");
+        container.setAttribute("aria-label", section.name);
         if (section.selectionMode === "single") {
             for (const item of renderItems) {
-                const el = document.createElement("div");
+                const el = document.createElement("button");
+                el.type = "button";
                 el.className = "osb-dropdown-item";
-                if (sel.has(item.label)) el.classList.add("selected");
+                el.setAttribute("role", "option");
+                el.setAttribute("aria-selected", String(sel.has(item.rawValue)));
+                if (sel.has(item.rawValue)) el.classList.add("selected");
                 el.textContent = item.label;
                 this.applyChipFont(el, s, "600");
                 el.addEventListener("mousemove", (e: MouseEvent) => {
@@ -895,7 +1227,7 @@ export class Visual implements IVisual {
                 });
                 el.addEventListener("click", (e: MouseEvent) => {
                     e.stopPropagation();
-                    this.onChipClick(section, item.label);
+                    this.onChipClick(section, item.rawValue);
                     this.closeAllDropdowns();
                 });
                 container.appendChild(el);
@@ -904,18 +1236,19 @@ export class Visual implements IVisual {
             for (const item of renderItems) {
                 const label = document.createElement("label");
                 label.className = "osb-dropdown-item osb-checkbox-item";
+                if (sel.has(item.rawValue)) label.classList.add("selected");
                 this.applyChipFont(label, s, "600");
 
                 const cb = document.createElement("input");
                 cb.type = "checkbox";
-                cb.checked = sel.has(item.label);
+                cb.checked = sel.has(item.rawValue);
                 cb.addEventListener("change", (e: Event) => {
                     e.stopPropagation();
-                    const currentSel = this.selections.get(section.name) || new Set<string>();
+                    const currentSel = this.selections.get(section.name) || new Set<FilterValue>();
                     if (cb.checked) {
-                        currentSel.add(item.label);
+                        currentSel.add(item.rawValue);
                     } else {
-                        currentSel.delete(item.label);
+                        currentSel.delete(item.rawValue);
                     }
                     this.selections.set(section.name, currentSel);
                     this.applySectionFilter(section);
@@ -947,7 +1280,11 @@ export class Visual implements IVisual {
      * instead of clobbering each other.
      */
     private applyAllFilters(): void {
-        const filters: BasicFilter[] = [];
+        // Backstop for every interaction path into the filter pipeline: a
+        // definitively unlicensed visual emits no filter. Belt to onChipClick's
+        // braces, because search, clear-all and dropdown items land here too.
+        if (this.licenseGate.blocked) return;
+        const filters: BasicFilter[] = [...this.externalConstraints];
         for (const section of this.sections) {
             if (!section.filterTarget) continue;
             const sel = this.selections.get(section.name);
@@ -963,14 +1300,19 @@ export class Visual implements IVisual {
         }
 
         this.selfFilterPending = true;
+        this.pendingFilterSignature = JSON.stringify(filters);
         try {
             if (filters.length > 0) {
                 (this.host as any).applyJsonFilter(filters, "general", "filter", 0 /* merge */);
             } else {
                 (this.host as any).applyJsonFilter(null, "general", "filter", 1 /* remove */);
             }
+            this.acceptedSelections = new Map([...this.selections].map(([name, values]) => [name, new Set(values)]));
+            this.filterError = false;
         } catch {
-            // Filter apply failed — ignore silently
+            this.selections = new Map([...this.acceptedSelections].map(([name, values]) => [name, new Set(values)]));
+            this.selfFilterPending = false;
+            this.filterError = true;
         }
     }
 
@@ -981,7 +1323,17 @@ export class Visual implements IVisual {
 
     private readAppliedFilters(options: VisualUpdateOptions): void {
         try {
-            const jsonFilters = (options as any).jsonFilters || [];
+            const jsonFilters = (options as any).jsonFilters;
+            // A licence redraw reuses the last payload; it is not a host restore.
+            // An explicitly delivered empty array, even immediately after a click,
+            // is a complete reset and must not be swallowed as a self-filter echo.
+            if (!Array.isArray(jsonFilters) || jsonFilters === this.lastJsonFilters) return;
+            this.lastJsonFilters = jsonFilters;
+            // Preserve the UI's all-selected state when its own remove-filter
+            // operation is acknowledged. A different payload is a host restore.
+            if (this.selfFilterPending && JSON.stringify(jsonFilters) === this.pendingFilterSignature) return;
+            this.selections.clear();
+            this.externalConstraints = [];
             const targetToSection = new Map<string, string>();
             for (const section of this.sections) {
                 if (section.filterTarget) {
@@ -995,9 +1347,15 @@ export class Visual implements IVisual {
                 const key = `${f.target.table || ""}.${f.target.column || ""}`;
                 const sectionName = targetToSection.get(key);
                 if (sectionName) {
-                    this.selections.set(sectionName, new Set(f.values || []));
+                    if (f.filterType === 1 && f.operator === "In" && Array.isArray(f.values)) {
+                        this.selections.set(sectionName, new Set(f.values));
+                    } else {
+                        this.externalConstraints.push(f);
+                    }
                 }
             }
+            this.acceptedSelections = new Map([...this.selections].map(([name, values]) => [name, new Set(values)]));
+            this.filterError = false;
         } catch {
             // Ignore filter read errors
         }
@@ -1017,7 +1375,15 @@ export class Visual implements IVisual {
 
         const trigger = document.createElement("button");
         trigger.className = "osb-dropdown-trigger";
+        trigger.dataset.focusKey = JSON.stringify(["dropdown", id]);
+        trigger.dataset.dropdownId = id;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.setAttribute("aria-haspopup", "dialog");
+        trigger.setAttribute("aria-controls", `osb-panel-${this.instanceId}`);
         trigger.textContent = label;
+        trigger.style.color = this.isHighContrast ? this.colorPalette.foreground.value : this.resolvedLabelColorHex;
+        trigger.style.background = this.isHighContrast ? this.colorPalette.background.value : "transparent";
+        trigger.style.borderColor = this.isHighContrast ? this.colorPalette.foreground.value : surfaceTokens(this.resolvedTheme).border;
         // Trigger label text treatment (TEXT-01) — same chip font
         // composite; bold-off falls back to the trigger's pre-existing
         // default weight 400 (no hardcoded font-weight in CSS).
@@ -1032,10 +1398,15 @@ export class Visual implements IVisual {
             this.closeAllDropdowns();
             this.openDropdownId = id;
             trigger.classList.add("open");
+            trigger.setAttribute("aria-expanded", "true");
 
             // Create fixed-position panel attached to document body
             const panel = document.createElement("div");
             panel.className = "osb-fixed-panel";
+            panel.addEventListener("contextmenu", this.contextMenuHandler);
+            panel.id = `osb-panel-${this.instanceId}`;
+            panel.setAttribute("role", "dialog");
+            panel.setAttribute("aria-label", label);
             this.activePanel = panel;
 
             // Build content
@@ -1050,6 +1421,13 @@ export class Visual implements IVisual {
             const dir = String(this.formattingSettings.slicerBarCard.fanDirection.value.value || "auto");
 
             this.positionPanel(panel, triggerRect, dir);
+            panel.addEventListener("keydown", (event: KeyboardEvent) => {
+                this.navigateOptions(event, Array.from(panel.querySelectorAll<HTMLElement>(
+                    "button.osb-dropdown-item,input[type=checkbox]")));
+            });
+            if (e.detail === 0) {
+                panel.querySelector<HTMLElement>(".osb-panel-search,button.osb-dropdown-item,input[type=checkbox]")?.focus();
+            }
 
             // Stop clicks inside panel from closing it
             panel.addEventListener("click", (ev) => ev.stopPropagation());
@@ -1060,15 +1438,18 @@ export class Visual implements IVisual {
     }
 
     private positionPanel(panel: HTMLElement, triggerRect: DOMRect, dir: string): void {
-        const margin = 4;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const margin = Math.min(4, vw / 2, vh / 2);
 
         // Make visible to measure
         panel.style.visibility = "hidden";
         panel.style.display = "inline-flex";
+        panel.style.maxWidth = Math.max(0, vw - margin * 2) + "px";
+        panel.style.maxHeight = Math.max(0, vh - margin * 2) + "px";
+        panel.style.overflow = "auto";
 
         const panelRect = panel.getBoundingClientRect();
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
 
         let resolvedDir = dir;
         if (resolvedDir === "auto") {
@@ -1116,34 +1497,63 @@ export class Visual implements IVisual {
         }
 
         // Clamp to viewport
-        if (top < margin) top = margin;
-        if (top + panelRect.height > vh - margin) top = vh - margin - panelRect.height;
-        if (left < margin) left = margin;
-        if (left + panelRect.width > vw - margin) left = vw - margin - panelRect.width;
+        top = Math.max(margin, Math.min(top, vh - margin - panelRect.height));
+        left = Math.max(margin, Math.min(left, vw - margin - panelRect.width));
 
         panel.style.top = top + "px";
         panel.style.left = left + "px";
 
         panel.style.visibility = "visible";
+        const startClip = resolvedDir === "left" ? "inset(0 0 0 100%)"
+            : resolvedDir === "up" ? "inset(100% 0 0 0)"
+            : resolvedDir === "down" ? "inset(0 0 100% 0)" : "inset(0 100% 0 0)";
+        const animation = settle(panel, [
+            { clipPath: startClip, opacity: 0.25 },
+            { clipPath: "inset(0 0 0 0)", opacity: 1 },
+        ], { duration: 180 });
+        if (animation) animation.onfinish = () => {
+            animation.cancel();
+            animation.onfinish = null;
+        };
     }
 
-    private closeAllDropdowns(): void {
+    private navigateOptions(event: KeyboardEvent, options: HTMLElement[]): void {
+        if (event.target instanceof HTMLInputElement && event.target.type !== "checkbox"
+            && event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || !options.length) return;
+        event.preventDefault();
+        const index = options.indexOf(document.activeElement as HTMLElement);
+        const previous = event.key === "ArrowLeft" || event.key === "ArrowUp";
+        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+            : index < 0 ? (previous ? options.length - 1 : 0)
+            : (index + (previous ? -1 : 1) + options.length) % options.length;
+        options[next].focus();
+    }
+
+    private closeAllDropdowns(restoreFocus = false): void {
+        const trigger = Array.from(this.target.querySelectorAll<HTMLElement>(".osb-dropdown-trigger"))
+            .find(element => element.dataset.dropdownId === this.openDropdownId);
         // Remove fixed panel from body
         if (this.activePanel) {
+            this.activePanel.getAnimations().forEach(animation => animation.cancel());
             this.activePanel.remove();
             this.activePanel = null;
         }
         this.target.querySelectorAll(".osb-dropdown-trigger.open").forEach(
-            (t) => t.classList.remove("open")
+            (t) => {
+                t.classList.remove("open");
+                t.setAttribute("aria-expanded", "false");
+            }
         );
         this.openDropdownId = "";
+        if (restoreFocus) trigger?.focus();
     }
 
     /* ═══════════════════════════════════════
      * PANEL COLOUR APPLICATION
      * ═══════════════════════════════════════ */
 
-    private applyPanelColors(panel: HTMLElement, trigger: HTMLElement): void {
+    private applyPanelColors(panel: HTMLElement, trigger?: HTMLElement): void {
         const s = this.formattingSettings.slicerBarCard;
         const hc = this.isHighContrast;
         const fg = hc ? this.colorPalette.foreground.value : "";
@@ -1155,9 +1565,14 @@ export class Visual implements IVisual {
         // + toRgba() read as renderSlicerBar's this.slicerRow paint (same
         // underlying colour, this is a second render site for it — the
         // floating dropdown panel/trigger — not a new colour surface).
-        const background = this.formattingSettings.background;
-        const outerBgHex = background.backgroundColor.value?.value ?? "#ffffff";
-        const outerBgTransparencyPct = background.transparency.value ?? 0;
+        // #819: the fan-out panel is a CHILD surface of the same tile, so it
+        // paints the SAME fill the root does — the Codex surface under a forced
+        // mode, the Background card under Auto. Its chip/accent colours are
+        // deliberately left as the user's and it gains NO neon glow: the Neon
+        // glow sites are the selected chip and the bar's own signature only.
+        const codex = this.resolvedCodex;
+        const outerBgHex = codex.bgHex;
+        const outerBgTransparencyPct = codex.transparencyPct;
 
         // chipBg stays OPAQUE — used for text/border legibility (action
         // button text colour, selected-item border) per T-07-02; only the
@@ -1168,31 +1583,62 @@ export class Visual implements IVisual {
         const chipFill = hc ? fgSelected : toRgba(this.resolvedChipColorHex, chipTransparencyPct);
         // fx-resolved Selected Chip Text Colour (TEXT-02) — label text
         // only; selection fill/border chrome untouched (T-14-05).
-        const chipText = hc ? bg : this.resolvedChipTextColorHex;
+        //
+        // NEXUS cycle-11 §7 (class 1 — ink judged against a surface nobody
+        // sees): unlike the v2 ring chip, a SELECTED dropdown item paints the
+        // chip colour as a real FILL, so its ink has to be judged against the
+        // surface a viewer actually sees — that fill at its own transparency
+        // over the panel's background, which is itself the Background card
+        // composited over whatever the host theme paints behind it.
+        const hostBgHex = this.colorPalette.background?.value || "#ffffff";
+        const panelSurfaceHex = compositeOver(outerBgHex, outerBgTransparencyPct, hostBgHex);
+        const selectedSurfaceHex = compositeOver(this.resolvedChipColorHex, chipTransparencyPct, panelSurfaceHex);
+        // Round 2: the round-1 test here was EXACT equality (ink === fill), and
+        // a pair one channel apart walked straight through it — measured
+        // rgb(0,217,255) on a #00d8fe fill at 1.009:1, and cyan on the white
+        // panel a fully transparent fill reveals at 1.698:1. legibleChipInk()
+        // asks the contrast question instead, on this same composited surface,
+        // and uses the identical rule the ring chips now use so the two
+        // surfaces agree.
+        const chipText = hc ? bg : this.legibleChipInk(selectedSurfaceHex);
         // Dropdown panel/trigger/search outlines follow the theme surface
         // token (same source as the count badges) — the old slicerBar
         // borderColor knob is retired; tile framing belongs to the shared
         // Border card alone (Neil live-QA 2026-07-16, duplicate-knob cull).
         const borderClr = hc ? fg : surfaceTokens(this.resolvedTheme).border;
         const bgClr = hc ? bg : toRgba(outerBgHex, outerBgTransparencyPct);
-        const labelClr = hc ? fg : s.labelColor.value.value;
-        const itemBg = hc ? bg : "#ffffff";
-        const itemText = hc ? fg : "#1a1a1a";
-        const hoverBg = hc ? bg : (outerBgHex === "#ffffff" ? "#f0eef8" : toRgba(outerBgHex, outerBgTransparencyPct));
+        const labelClr = hc ? fg : this.resolvedLabelColorHex;
+        // Dropdown rows were hard-coded white/near-black whatever the theme — under
+        // Dark (auto or forced) they take the dark card token and its legible ink
+        // (#819 roll-out, left open by the Slicer Bar executor; Neil 2026-09-12).
+        const itemBg = hc ? bg : (this.resolvedTheme === "light" ? "#ffffff" : surfaceTokens("dark").card);
+        const itemText = hc ? fg : (this.resolvedTheme === "light" ? "#1a1a1a" : this.defaultInk(itemBg));
+        const hoverBg = hc ? bg : (this.resolvedTheme === "light" ? "#f0eef8" : panelSurfaceHex);
+        const hoverInk = hc ? fg : this.defaultInk(hoverBg, chipBg);
 
         panel.style.background = bgClr;
         panel.style.borderColor = borderClr;
+        panel.style.setProperty("--codex-accent", hc ? fgSelected : chipBg);
+        panel.style.setProperty("--osb-panel-ink", hc ? fg : this.defaultInk(panelSurfaceHex));
+        panel.style.setProperty("--osb-panel-hover", hoverBg);
 
-        trigger.style.borderColor = borderClr;
-        trigger.style.background = bgClr;
-        trigger.style.color = labelClr;
+        if (trigger) {
+            trigger.style.borderColor = borderClr;
+            trigger.style.background = hc ? bg : "transparent";
+            trigger.style.color = labelClr;
+        }
 
         panel.querySelectorAll(".osb-panel-action-btn").forEach((btn: HTMLElement) => {
-            btn.style.color = chipBg;
+            btn.style.color = hc ? fg : this.defaultInk(panelSurfaceHex, chipBg);
         });
 
         panel.querySelectorAll(".osb-panel-search").forEach((inp: HTMLElement) => {
             inp.style.borderColor = borderClr;
+            inp.style.background = hc ? bg : panelSurfaceHex;
+            inp.style.color = hc ? fg : this.defaultInk(panelSurfaceHex);
+        });
+        panel.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(input => {
+            input.style.accentColor = hc ? fgSelected : chipBg;
         });
 
         panel.querySelectorAll(".osb-dropdown-item").forEach((item: HTMLElement) => {
@@ -1210,7 +1656,7 @@ export class Visual implements IVisual {
             item.addEventListener("mouseenter", () => {
                 if (!item.classList.contains("selected")) {
                     item.style.borderColor = chipBg;
-                    item.style.color = chipBg;
+                    item.style.color = hoverInk;
                     item.style.background = hoverBg;
                 }
             });
@@ -1235,6 +1681,12 @@ export class Visual implements IVisual {
         return bold ? "700" : restWeight;
     }
 
+    private defaultInk(surface: string, preferred?: string): string {
+        if (preferred && contrastRatio(preferred, surface) >= 4.5) return preferred;
+        const ink = contrastInk(surface, surfaceTokens("light").text, surfaceTokens("dark").text);
+        return contrastRatio(ink, surface) >= 4.5 ? ink : contrastInk(surface, "#000000", "#ffffff");
+    }
+
     /** Apply the shared chip font composite (family/size/bold/italic/
      *  underline) to a chip/trigger/dropdown-item text surface. Colour is
      *  deliberately NOT set here — each call site keeps its own colour
@@ -1248,13 +1700,29 @@ export class Visual implements IVisual {
     }
 
     public destroy(): void {
+        // Drop the in-flight licence check FIRST: its redraw callback replays
+        // update() against a torn-down target otherwise (NEXUS lifecycle finding).
+        this.licenseGate.dispose();
+        this.destroyed = true;
         this.closeAllDropdowns();
         document.removeEventListener("click", this.documentClickHandler);
+        document.removeEventListener("keydown", this.documentKeyHandler);
+        this.target.removeEventListener("contextmenu", this.contextMenuHandler);
         if (this.activePanel) {
             this.activePanel.remove();
             this.activePanel = null;
         }
         this.cornerSignature?.destroy();
         this.cornerSignature = null;
+        this.lastUpdateOptions = null;
+        this.sections = [];
+        this.cachedSections = null;
+        this.selections.clear();
+        this.externalAvail.clear();
+        this.acceptedSelections.clear();
+        this.externalConstraints = [];
+        this.lastJsonFilters = undefined;
+        this.sectionDefaults.clear();
+        this.target.replaceChildren();
     }
 }
