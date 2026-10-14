@@ -10,6 +10,7 @@ import FormattingSettingsModel = formattingSettings.Model;
 import { BackgroundSettings } from "./shared/backgroundSettings";
 import { CodexThemeSettings } from "./shared/codexThemeSettings";
 import { TitleSettings } from "./shared/titleSettings";
+import { LicenceSettings } from "./shared/licenceSettings";
 import { BorderSettings } from "./shared/borderSettings";
 import { CardSignatureSettings } from "./shared/cardSignatureSettings";
 import { textAlignFor, makeFontControl } from "./shared/textFormatting";
@@ -201,5 +202,7 @@ export class VisualFormattingSettingsModel extends FormattingSettingsModel {
     // more common "never painted" case. The shared Background card's own
     // raw default (opaque white, transparency 0) is pixel-identical.
 
-    cards = [this.titleSettings, this.slicerBarCard, this.background, this.codexTheme, this.cardSignature, this.visualBorder];
+    licence = new LicenceSettings();
+
+    cards = [this.titleSettings, this.slicerBarCard, this.background, this.codexTheme, this.cardSignature, this.visualBorder, this.licence];
 }

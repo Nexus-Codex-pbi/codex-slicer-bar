@@ -198,7 +198,7 @@ export class Visual implements IVisual {
 
             if (this.lastUpdateOptions) this.update(this.lastUpdateOptions);
 
-        });
+        }, "slicer-bar");
         this.host = options.host;
         this.events = options.host.eventService;
         this.localizationManager = options.host.createLocalizationManager();
@@ -270,7 +270,7 @@ export class Visual implements IVisual {
         this.events.renderingStarted(options);
         this.lastUpdateOptions = options;
 
-        if (this.licenseGate.blockedThisFrame()) {
+        if (this.licenseGate.blockedThisFrame(options.dataViews)) {
             // The fan-out panel lives on document.body, NOT under this.target, so
             // hiding the root leaves it on screen with live handlers — NEXUS cycle-11
             // §1 landed a second filter AFTER the denial. Tear it down first.

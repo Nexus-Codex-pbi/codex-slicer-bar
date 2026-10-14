@@ -50,6 +50,12 @@
     }
   ],
   "objects": {
+    "licence": {
+      "displayName": "Licence",
+      "properties": {
+        "key": { "displayName": "Suite key", "type": { "text": true } }
+      }
+    },
     "general": {
       "displayName": "General",
       "properties": {
